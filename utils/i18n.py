@@ -161,6 +161,8 @@ class _I18nManager(QObject):
                 "language": "语言",
                 "chinese": "中文",
                 "english": "English",
+                "autostart": "开机自启动",
+                "autostart_desc": "Windows 登录时自动启动并开始追踪",
             },
             "en": {
                 # --- main_window ---
@@ -306,6 +308,8 @@ class _I18nManager(QObject):
                 "language": "Language",
                 "chinese": "中文",
                 "english": "English",
+                "autostart": "Start on Login",
+                "autostart_desc": "Auto-launch and start tracking when Windows starts",
             },
         }
 

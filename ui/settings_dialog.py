@@ -4,12 +4,13 @@ Settings Dialog
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-    QPushButton, QFrame
+    QPushButton, QFrame, QCheckBox
 )
 from PyQt6.QtCore import Qt
 
 from core.database import Database
 from utils.i18n import trs, set_language, current_lang
+from utils.autostart import is_autostart_enabled, set_autostart
 
 
 class SettingsDialog(QDialog):
@@ -80,6 +81,32 @@ class SettingsDialog(QDialog):
         lang_layout.addWidget(self.lang_combo)
 
         layout.addWidget(lang_frame)
+
+        # Autostart section
+        auto_frame = QFrame()
+        auto_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 10px;
+                padding: 8px;
+            }
+        """)
+        auto_layout = QVBoxLayout(auto_frame)
+        auto_layout.setContentsMargins(16, 16, 16, 16)
+        auto_layout.setSpacing(8)
+
+        self.autostart_check = QCheckBox(trs("autostart"))
+        self.autostart_check.setChecked(is_autostart_enabled())
+        self.autostart_check.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.autostart_check.stateChanged.connect(self._on_autostart_changed)
+
+        auto_desc = QLabel(trs("autostart_desc"))
+        auto_desc.setStyleSheet("font-size: 12px; color: #78909c;")
+
+        auto_layout.addWidget(self.autostart_check)
+        auto_layout.addWidget(auto_desc)
+
+        layout.addWidget(auto_frame)
         layout.addStretch()
 
         # Close button
@@ -104,3 +131,10 @@ class SettingsDialog(QDialog):
         if lang != current_lang():
             set_language(lang)
             self.db.set_setting("language", lang)
+
+    def _on_autostart_changed(self, state):
+        enabled = state == Qt.CheckState.Checked.value
+        success = set_autostart(enabled)
+        if not success:
+            # Revert checkbox if operation failed
+            self.autostart_check.setChecked(is_autostart_enabled())
