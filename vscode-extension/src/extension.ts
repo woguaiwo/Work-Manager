@@ -2,9 +2,7 @@
  * Work Manager for VS Code
  *
  * Tracks the current working directory (CWD) of the active integrated terminal
- * and exposes it to the local Work Manager app in two ways:
- *  1. Writes the CWD to a local file.
- *  2. Optionally injects the CWD into the VS Code window title.
+ * and exposes it to the local Work Manager app.
  */
 import * as vscode from 'vscode';
 import * as fs from 'fs';
@@ -14,29 +12,42 @@ import * as path from 'path';
 const DEFAULT_OUTPUT_FILENAME = '.wm_vscode_cwd';
 
 let updateTimer: NodeJS.Timeout | undefined;
-let lastCwd: string | undefined;
 let originalTitleSetting: string | undefined;
 let disposables: vscode.Disposable[] = [];
 
+// Cache the latest known CWD for each terminal
+const terminalCwdMap = new WeakMap<vscode.Terminal, string>();
+
 export function activate(context: vscode.ExtensionContext) {
-    // Register command to force a refresh
     context.subscriptions.push(
         vscode.commands.registerCommand('workManager.updateNow', updateNow)
     );
 
-    // Listen for terminal activation and CWD changes
+    // When a terminal's shell integration becomes ready, register its CWD listener
+    context.subscriptions.push(
+        vscode.window.onDidChangeTerminalShellIntegration((event) => {
+            const cwd = event.shellIntegration.cwd?.fsPath;
+            if (cwd) {
+                terminalCwdMap.set(event.terminal, cwd);
+                registerCwdListener(event.terminal, event.shellIntegration);
+                scheduleUpdate();
+            }
+        })
+    );
+
+    // Track already-open terminals
+    vscode.window.terminals.forEach((terminal) => {
+        const si = (terminal as any).shellIntegration;
+        if (si?.cwd) {
+            terminalCwdMap.set(terminal, si.cwd.fsPath);
+            registerCwdListener(terminal, si);
+        }
+    });
+
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTerminal(() => scheduleUpdate())
     );
 
-    // Some terminals fire shellIntegration events; listen on the active terminal if available
-    context.subscriptions.push(
-        vscode.window.onDidOpenTerminal(trackTerminal)
-    );
-
-    vscode.window.terminals.forEach(trackTerminal);
-
-    // Listen for configuration changes
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration((e) => {
             if (e.affectsConfiguration('workManager')) {
@@ -58,13 +69,20 @@ export function deactivate() {
     restoreWindowTitle();
 }
 
-function trackTerminal(terminal: vscode.Terminal) {
-    const si = (terminal as any).shellIntegration;
-    if (si && typeof si.onDidChangeCurrentDirectory === 'function') {
-        disposables.push(
-            si.onDidChangeCurrentDirectory(() => scheduleUpdate())
-        );
+function registerCwdListener(terminal: vscode.Terminal, si: any) {
+    if (typeof si.onDidChangeCurrentDirectory !== 'function') {
+        return;
     }
+    const existing = (terminal as any)._wmCwdDisposable;
+    if (existing) {
+        existing.dispose();
+    }
+    const disposable = si.onDidChangeCurrentDirectory((uri: vscode.Uri) => {
+        terminalCwdMap.set(terminal, uri.fsPath);
+        scheduleUpdate();
+    });
+    (terminal as any)._wmCwdDisposable = disposable;
+    disposables.push(disposable);
 }
 
 function scheduleUpdate() {
@@ -77,48 +95,34 @@ function scheduleUpdate() {
 }
 
 async function updateNow() {
-    const cwd = await getActiveTerminalCwd();
+    const cwd = getActiveTerminalCwd();
     if (cwd) {
-        lastCwd = cwd;
         await writeCwdToFile(cwd);
         await updateWindowTitle(cwd);
     }
 }
 
-async function getActiveTerminalCwd(): Promise<string | undefined> {
+function getActiveTerminalCwd(): string | undefined {
     const terminal = vscode.window.activeTerminal;
     if (!terminal) {
         return undefined;
     }
 
-    // Method 1: shellIntegration.cwd (VS Code 1.93+, requires shell integration enabled)
+    // 1. Use cached CWD from shell integration events
+    if (terminalCwdMap.has(terminal)) {
+        return terminalCwdMap.get(terminal);
+    }
+
+    // 2. Try reading current shellIntegration state
     const si = (terminal as any).shellIntegration;
-    if (si && si.cwd) {
-        return si.cwd.fsPath;
+    if (si?.cwd) {
+        const cwd = si.cwd.fsPath;
+        terminalCwdMap.set(terminal, cwd);
+        registerCwdListener(terminal, si);
+        return cwd;
     }
 
-    // Method 2: send a POSIX shell command and read the result
-    // This only works if the terminal is in a shell that supports `pwd` and
-    // the shell integration stream is enabled. It is a best-effort fallback.
-    try {
-        const result = await new Promise<string | undefined>((resolve) => {
-            const disposable = vscode.window.onDidChangeTerminalShellIntegration((event) => {
-                if (event.terminal === terminal && event.shellIntegration.cwd) {
-                    disposable.dispose();
-                    resolve(event.shellIntegration.cwd.fsPath);
-                }
-            });
-            setTimeout(() => {
-                disposable.dispose();
-                resolve(undefined);
-            }, 500);
-        });
-        if (result) { return result; }
-    } catch {
-        // ignore
-    }
-
-    return lastCwd;
+    return undefined;
 }
 
 async function writeCwdToFile(cwd: string) {
@@ -150,12 +154,10 @@ async function updateWindowTitle(cwd: string) {
 
     const cwdBasename = path.basename(cwd) || cwd;
 
-    // Expand the supported variables manually
-    let newTitle = format
+    const newTitle = format
         .replace(/\${cwd}/g, cwd)
         .replace(/\${cwdBasename}/g, cwdBasename);
 
-    // Update only the workspace-scoped setting; remember original value first time
     const titleConfig = vscode.workspace.getConfiguration('window');
     if (originalTitleSetting === undefined) {
         originalTitleSetting = titleConfig.get<string>('title', '');
