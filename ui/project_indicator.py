@@ -146,6 +146,7 @@ class ProjectIndicator(QWidget):
             }
         """)
         self.btn_focus.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_focus.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.btn_focus.clicked.connect(self._toggle_focus_mode)
         top.addWidget(self.btn_focus)
 
@@ -169,9 +170,11 @@ class ProjectIndicator(QWidget):
 
         layout.addLayout(bottom)
 
-        # Ensure all child widgets pass mouse events up to ProjectIndicator
+        # Ensure all child widgets pass mouse events up to ProjectIndicator,
+        # except the focus button which needs to handle its own clicks.
         for child in self.findChildren(QWidget):
-            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            if child is not self.btn_focus:
+                child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def _init_timer(self):
         self._timer = QTimer(self)
