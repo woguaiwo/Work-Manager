@@ -113,6 +113,21 @@ def get_current_app_name() -> str:
     return info['process_name']
 
 
+def _read_vscode_terminal_cwd() -> str:
+    """
+    Read the CWD file written by the Work Manager VS Code extension.
+    Returns the directory string, or empty string if unavailable.
+    """
+    try:
+        cwd_path = os.path.expanduser('~/.wm_vscode_cwd')
+        if os.path.exists(cwd_path):
+            with open(cwd_path, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+    except Exception:
+        _log.debug("Failed to read VS Code terminal CWD file", exc_info=True)
+    return ''
+
+
 def get_user_state(idle_threshold_ms: int = 180_000) -> dict:
     """
     Returns a comprehensive state dict combining app info and idle detection.
@@ -128,9 +143,19 @@ def get_user_state(idle_threshold_ms: int = 180_000) -> dict:
     else:
         is_active = idle_ms < idle_threshold_ms
 
+    window_title = app_info['window_title']
+
+    # If the foreground app is VS Code, enrich the window title with the
+    # active terminal's current working directory when available.
+    if app_info['process_name'] == 'Code.exe':
+        term_cwd = _read_vscode_terminal_cwd()
+        if term_cwd:
+            basename = os.path.basename(term_cwd) or term_cwd
+            window_title = f"{window_title} [T:{basename}]"
+
     state = {
         'app_name': app_info['process_name'],
-        'window_title': app_info['window_title'],
+        'window_title': window_title,
         'idle_ms': idle_ms,
         'is_active': is_active,
         'is_locked': locked,

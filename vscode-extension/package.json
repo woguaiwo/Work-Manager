@@ -1,0 +1,77 @@
+{
+  "name": "workmanager-vscode",
+  "displayName": "Work Manager for VS Code",
+  "description": "Tracks the active terminal's working directory for the Work Manager time tracker.",
+  "version": "0.1.0",
+  "publisher": "woguaiwo",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization",
+    "Productivity"
+  ],
+  "keywords": [
+    "time tracking",
+    "work manager",
+    "productivity",
+    "terminal",
+    "cwd"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Work Manager",
+      "properties": {
+        "workManager.outputPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to write the active terminal CWD to. Leave empty to use ~/.wm_vscode_cwd (or %USERPROFILE%\\.wm_vscode_cwd on Windows)."
+        },
+        "workManager.updateWindowTitle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Inject the active terminal CWD into the VS Code window title so Work Manager can read it directly."
+        },
+        "workManager.titleFormat": {
+          "type": "string",
+          "default": "${dirty}${activeEditorShort}${separator}${rootName}${separator}[${cwdBasename}]${separator}${appName}",
+          "description": "Window title format. Use ${cwdBasename} or ${cwd} for terminal working directory."
+        },
+        "workManager.updateIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "description": "How often to refresh the active terminal CWD (milliseconds)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "workManager.updateNow",
+        "title": "Work Manager: Update terminal CWD now"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.93.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/woguaiwo/Work-Manager.git"
+  },
+  "bugs": {
+    "url": "https://github.com/woguaiwo/Work-Manager/issues"
+  }
+}
