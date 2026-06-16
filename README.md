@@ -72,6 +72,14 @@ Or on Windows, double-click:
 - `start.bat` — launches with a console window
 - `start.vbs` — launches silently in the background
 
+### VS Code Extension (Optional)
+
+For tracking the current working directory of your VS Code integrated terminal (including remote SSH sessions), install the companion extension:
+
+[![Install from Marketplace](https://img.shields.io/badge/VS_Code_Marketplace-Work%20Manager%20for%20VS%20Code-blue.svg)](https://marketplace.visualstudio.com/items?itemName=woguaiwo.workmanager-vscode)
+
+[Work Manager for VS Code](https://marketplace.visualstudio.com/items?itemName=woguaiwo.workmanager-vscode)
+
 ### Create Desktop Shortcut
 
 ```bash

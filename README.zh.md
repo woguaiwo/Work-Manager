@@ -72,6 +72,14 @@ python main.py
 - `start.bat` — 带控制台窗口启动
 - `start.vbs` — 静默后台启动
 
+### VS Code 扩展（可选）
+
+如需追踪 VS Code 内置终端的当前工作目录（包括远程 SSH 会话），请安装配套扩展：
+
+[![从 Marketplace 安装](https://img.shields.io/badge/VS_Code_Marketplace-Work%20Manager%20for%20VS%20Code-blue.svg)](https://marketplace.visualstudio.com/items?itemName=woguaiwo.workmanager-vscode)
+
+[Work Manager for VS Code](https://marketplace.visualstudio.com/items?itemName=woguaiwo.workmanager-vscode)
+
 ### 创建桌面快捷方式
 
 ```bash
