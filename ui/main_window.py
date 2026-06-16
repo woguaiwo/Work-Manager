@@ -393,8 +393,10 @@ class MainWindow(QMainWindow):
     def _on_app_change(self, app_name: str):
         self.app_changed.emit(app_name)
         # Tracker callback runs in background thread -> schedule UI update on main thread
-        QTimer.singleShot(0, self.timeline_container.refresh)
-        QTimer.singleShot(0, self.dashboard.refresh)
+        if hasattr(self, 'timeline_container'):
+            QTimer.singleShot(0, self.timeline_container.refresh)
+        if hasattr(self, 'dashboard'):
+            QTimer.singleShot(0, self.dashboard.refresh)
 
     def show_normal(self):
         self.showNormal()

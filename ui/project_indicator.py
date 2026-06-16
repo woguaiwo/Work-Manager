@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QDialog, QPushButton, QGridLayout
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QAction
+from PyQt6.QtGui import QColor, QFont, QAction, QCursor
 
 from utils.logger import get_logger
 from utils.i18n import trs
@@ -115,7 +115,7 @@ class ProjectIndicator(QWidget):
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(2)
 
-        # Top row: color bar + task name
+        # Top row: color bar + task name + focus button
         top = QHBoxLayout()
         top.setSpacing(6)
 
@@ -129,6 +129,25 @@ class ProjectIndicator(QWidget):
         self.lbl_task.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.Bold))
         top.addWidget(self.lbl_task)
         top.addStretch()
+
+        # Focus mode toggle button
+        self.btn_focus = QPushButton("🎯")
+        self.btn_focus.setFixedSize(18, 18)
+        self.btn_focus.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                font-size: 12px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+            }
+        """)
+        self.btn_focus.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_focus.clicked.connect(self._toggle_focus_mode)
+        top.addWidget(self.btn_focus)
 
         layout.addLayout(top)
 
@@ -177,6 +196,7 @@ class ProjectIndicator(QWidget):
             self.lbl_color.setStyleSheet("background-color: #9E9E9E; border-radius: 4px;")
             self.lbl_app.setText("--")
             self.lbl_duration.setText("")
+            self._update_focus_ui()
             return
 
         summary = self.tracker.get_current_segment_summary()
@@ -196,11 +216,16 @@ class ProjectIndicator(QWidget):
                 task_name = trs("unclassified")
                 color = '#9E9E9E'
         else:
-            task_name = "未分类"
+            task_name = trs("unclassified")
             color = '#9E9E9E'
+
+        # Focus mode prefix
+        if self.tracker.is_focus_mode():
+            task_name = f"🎯 {task_name}"
 
         self.lbl_task.setText(task_name)
         self.lbl_color.setStyleSheet(f"background-color: {color}; border-radius: 4px;")
+        self._update_focus_ui()
 
         # Show app name + window title snippet
         app_display = app if is_active else trs("idle")
@@ -301,6 +326,15 @@ class ProjectIndicator(QWidget):
             }
         """)
 
+        # Focus mode toggle (checkable)
+        focus_action = QAction(f"🎯 {trs('focus_mode')}", self)
+        focus_action.setCheckable(True)
+        focus_action.setChecked(self.tracker.is_focus_mode())
+        focus_action.triggered.connect(self._toggle_focus_mode)
+        menu.addAction(focus_action)
+
+        menu.addSeparator()
+
         # Task list
         tasks = self.db.get_all_tasks()
         for task in tasks:
@@ -331,6 +365,55 @@ class ProjectIndicator(QWidget):
         self.tracker.set_current_task(real_id)
         self.task_changed.emit(task_id)
         self._refresh()
+
+    def _toggle_focus_mode(self):
+        new_state = not self.tracker.is_focus_mode()
+        self.tracker.set_focus_mode(new_state)
+        self._refresh()
+
+    def _update_focus_ui(self):
+        """Update focus button and container border based on focus mode state."""
+        if self.tracker.is_focus_mode():
+            self.btn_focus.setText("🎯")
+            self.btn_focus.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 152, 0, 0.3);
+                    border: 1px solid #FF9800;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 152, 0, 0.5);
+                }
+            """)
+            self.container.setStyleSheet("""
+                QWidget {
+                    background-color: rgba(50, 50, 50, 220);
+                    border-radius: 10px;
+                    border: 1px solid #FF9800;
+                }
+            """)
+        else:
+            self.btn_focus.setText("🎯")
+            self.btn_focus.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    border: none;
+                    font-size: 12px;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.15);
+                    border-radius: 4px;
+                }
+            """)
+            self.container.setStyleSheet("""
+                QWidget {
+                    background-color: rgba(50, 50, 50, 220);
+                    border-radius: 10px;
+                }
+            """)
 
     def _show_task_picker(self):
         tasks = self.db.get_all_tasks()

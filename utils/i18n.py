@@ -68,6 +68,9 @@ class _I18nManager(QObject):
                 "paused": "已暂停",
                 "idle": "空闲中",
                 "open_main_window": "打开主窗口",
+                "focus_mode": "专注模式",
+                "enter_focus_mode": "进入专注模式",
+                "exit_focus_mode": "退出专注模式",
                 # --- timeline_container ---
                 "prev_day": "前一天",
                 "today_btn": "今天",
@@ -215,6 +218,9 @@ class _I18nManager(QObject):
                 "paused": "Paused",
                 "idle": "Idle",
                 "open_main_window": "Open Main Window",
+                "focus_mode": "Focus Mode",
+                "enter_focus_mode": "Enter Focus Mode",
+                "exit_focus_mode": "Exit Focus Mode",
                 # --- timeline_container ---
                 "prev_day": "Previous Day",
                 "today_btn": "Today",

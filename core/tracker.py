@@ -72,8 +72,12 @@ class UsageTracker:
 
         # When True, tracker pauses change detection (e.g. user interacting with indicator)
         self._paused = False
-        _log.info("UsageTracker initialized | poll=%.1fs | idle_threshold=%d ms | manual_task=%s",
-                  poll_interval, idle_threshold_ms, self._manual_task_id)
+
+        # Focus mode: force all tracking to use the manually selected task,
+        # ignoring context memory and auto inference.
+        self._focus_mode: bool = self._load_focus_mode()
+        _log.info("UsageTracker initialized | poll=%.1fs | idle_threshold=%d ms | manual_task=%s | focus_mode=%s",
+                  poll_interval, idle_threshold_ms, self._manual_task_id, self._focus_mode)
 
     def add_callback(self, callback: Callable):
         self._callbacks.append(callback)
@@ -88,20 +92,43 @@ class UsageTracker:
             self._manual_task_id = task_id
             self.db.set_current_task(task_id)
 
-            # Store in context memory so this app/project remembers the task
-            if self._current_segment:
-                key = self._make_context_key(
-                    self._current_segment.app_name,
-                    self._current_segment.window_title
-                )
-                self._context_tasks[key] = task_id
-                self._save_context_tasks()
-                _log.info("Context task saved | key=%s | task_id=%s", key, task_id)
+            # In focus mode, do not pollute context memory; just lock the task.
+            if not self._focus_mode:
+                # Store in context memory so this app/project remembers the task
+                if self._current_segment:
+                    key = self._make_context_key(
+                        self._current_segment.app_name,
+                        self._current_segment.window_title
+                    )
+                    self._context_tasks[key] = task_id
+                    self._save_context_tasks()
+                    _log.info("Context task saved | key=%s | task_id=%s", key, task_id)
+            else:
+                _log.info("Focus mode active | context memory not updated")
 
             _log.info("Manual task set | task_id=%s", task_id)
             # If we have an open active segment, update its task in-memory
             if self._current_segment and not self._current_segment.is_idle:
                 self._current_segment.task_id = task_id
+
+    def is_focus_mode(self) -> bool:
+        """Return whether focus mode is currently enabled."""
+        return self._focus_mode
+
+    def set_focus_mode(self, enabled: bool):
+        """Enable or disable focus mode. Persist state to DB."""
+        with self._lock:
+            self._focus_mode = enabled
+            self.db.set_setting('focus_mode', '1' if enabled else '0')
+            _log.info("Focus mode %s", "enabled" if enabled else "disabled")
+
+    def _load_focus_mode(self) -> bool:
+        """Load focus mode state from DB settings."""
+        try:
+            return self.db.get_setting('focus_mode', '0') == '1'
+        except Exception as e:
+            _log.warning("Failed to load focus mode: %s", e)
+            return False
 
     def pause_polling(self):
         """Pause change detection while user interacts with UI (e.g. indicator)."""
@@ -369,17 +396,22 @@ class UsageTracker:
         app = state['app_name']
         window_title = state.get('window_title', '')
 
-        # Priority: context memory > auto inference > None (unclassified)
-        # Each app/project remembers its own task independently
-        key = self._make_context_key(app, window_title)
-        if key in self._context_tasks:
-            task_id = self._context_tasks[key]  # may be None = explicitly unclassified
-            _log.debug("Context task restored | key=%s | task=%s", key, task_id)
+        if self._focus_mode:
+            # Focus mode: force the manually selected task for every segment
+            task_id = self._manual_task_id
+            _log.debug("Focus mode | forcing task_id=%s", task_id)
         else:
-            task_id = self._infer_task_from_title(app, window_title)
+            # Normal mode: context memory > auto inference > None (unclassified)
+            # Each app/project remembers its own task independently
+            key = self._make_context_key(app, window_title)
+            if key in self._context_tasks:
+                task_id = self._context_tasks[key]  # may be None = explicitly unclassified
+                _log.debug("Context task restored | key=%s | task=%s", key, task_id)
+            else:
+                task_id = self._infer_task_from_title(app, window_title)
 
-        # Keep manual_task_id in sync for current segment display
-        self._manual_task_id = task_id
+            # Keep manual_task_id in sync for current segment display
+            self._manual_task_id = task_id
 
         seg = Segment(
             date_str=date_str,
