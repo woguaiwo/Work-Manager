@@ -26,6 +26,7 @@ from ui.task_dialog import TaskManagerDialog
 from ui.timeline_container import TimelineContainer
 from ui.calendar_widget import CalendarWidget
 from ui.project_indicator import ProjectIndicator
+from ui.projects_widget import ProjectsWidget
 
 _log = get_logger("mainwindow")
 
@@ -190,6 +191,10 @@ class MainWindow(QMainWindow):
         self.btn_calendar.setCheckable(True)
         self.btn_calendar.clicked.connect(lambda: self._switch_page(3))
 
+        self.btn_projects = QPushButton()
+        self.btn_projects.setCheckable(True)
+        self.btn_projects.clicked.connect(lambda: self._switch_page(4))
+
         self.btn_tasks = QPushButton()
         self.btn_tasks.setCheckable(True)
         self.btn_tasks.clicked.connect(self._open_task_manager)
@@ -201,6 +206,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.btn_weekly)
         sidebar_layout.addWidget(self.btn_calendar)
+        sidebar_layout.addWidget(self.btn_projects)
         sidebar_layout.addWidget(self.btn_tasks)
         sidebar_layout.addWidget(self.btn_settings)
         sidebar_layout.addStretch()
@@ -263,6 +269,10 @@ class MainWindow(QMainWindow):
         self.calendar_widget = CalendarWidget(self.db)
         self.stack.addWidget(self.calendar_widget)
 
+        # Page 4: Projects
+        self.projects_widget = ProjectsWidget(self.db)
+        self.stack.addWidget(self.projects_widget)
+
         main_layout.addWidget(self.stack, 1)
 
     def _switch_page(self, index: int):
@@ -271,12 +281,15 @@ class MainWindow(QMainWindow):
         self.btn_dashboard.setChecked(index == 1)
         self.btn_weekly.setChecked(index == 2)
         self.btn_calendar.setChecked(index == 3)
+        self.btn_projects.setChecked(index == 4)
         if index == 0:
             self.timeline_container.refresh()
         elif index == 1:
             self.dashboard.refresh()
         elif index == 3:
             self.calendar_widget.refresh()
+        elif index == 4:
+            self.projects_widget._load_projects()
 
     def _open_task_manager(self):
         dialog = TaskManagerDialog(self.db, self)
@@ -426,6 +439,7 @@ class MainWindow(QMainWindow):
         self.btn_dashboard.setText(f"📈 {trs('dashboard')}")
         self.btn_weekly.setText(f"📋 {trs('weekly_plan')}")
         self.btn_calendar.setText(f"📅 {trs('calendar')}")
+        self.btn_projects.setText(f"📁 {trs('projects')}")
         self.btn_tasks.setText(f"📝 {trs('task_management')}")
         self.btn_settings.setText(f"⚙ {trs('settings')}")
 

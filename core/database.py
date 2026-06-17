@@ -63,6 +63,33 @@ class QuadrantTask:
     created_at: str
 
 
+@dataclass
+class Project:
+    id: int
+    name: str
+    color: str
+    sort_order: int
+    created_at: str
+
+
+@dataclass
+class ProjectSection:
+    id: int
+    project_id: int
+    name: str
+    color: str
+    collapsed: int
+    sort_order: int
+
+
+@dataclass
+class ProjectNote:
+    id: int
+    section_id: int
+    content: str
+    updated_at: str
+
+
 # ---------------------------------------------------------------------------
 # Database class
 # ---------------------------------------------------------------------------
@@ -167,6 +194,41 @@ class Database:
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_ce_date ON calendar_events(date)
+        ''')
+
+        # Projects, sections, and rich-text notes
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL DEFAULT 'New Project',
+                color TEXT DEFAULT '#5B8DB8',
+                sort_order INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS project_sections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                name TEXT NOT NULL DEFAULT 'New Section',
+                color TEXT DEFAULT '#E3F2FD',
+                collapsed INTEGER DEFAULT 0,
+                sort_order INTEGER DEFAULT 0,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_project_sections_project
+            ON project_sections(project_id)
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS project_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                section_id INTEGER NOT NULL UNIQUE,
+                content TEXT DEFAULT '',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (section_id) REFERENCES project_sections(id) ON DELETE CASCADE
+            )
         ''')
 
         # Application settings (key-value store)
@@ -425,6 +487,126 @@ class Database:
             ORDER BY date, id
         ''', (f"{month_str}%",))
         return cursor.fetchall()
+
+    # ------------------------------------------------------------------
+    # Projects / sections / notes
+    # ------------------------------------------------------------------
+
+    def get_all_projects(self) -> List[Project]:
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT id, name, color, sort_order, created_at
+            FROM projects ORDER BY sort_order, id
+        ''')
+        return [Project(*r) for r in cursor.fetchall()]
+
+    def add_project(self, name: str = 'New Project', color: str = '#5B8DB8',
+                    sort_order: int = 0) -> int:
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT INTO projects (name, color, sort_order) VALUES (?, ?, ?)
+        ''', (name, color, sort_order))
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def update_project(self, project_id: int, name: Optional[str] = None,
+                       color: Optional[str] = None,
+                       sort_order: Optional[int] = None):
+        cursor = self.conn.cursor()
+        fields = []
+        values = []
+        if name is not None:
+            fields.append("name = ?")
+            values.append(name)
+        if color is not None:
+            fields.append("color = ?")
+            values.append(color)
+        if sort_order is not None:
+            fields.append("sort_order = ?")
+            values.append(sort_order)
+        if not fields:
+            return
+        values.append(project_id)
+        cursor.execute(f"UPDATE projects SET {', '.join(fields)} WHERE id = ?", values)
+        self.conn.commit()
+
+    def delete_project(self, project_id: int):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        self.conn.commit()
+
+    def get_project_sections(self, project_id: int) -> List[ProjectSection]:
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT id, project_id, name, color, collapsed, sort_order
+            FROM project_sections WHERE project_id = ?
+            ORDER BY sort_order, id
+        ''', (project_id,))
+        return [ProjectSection(*r) for r in cursor.fetchall()]
+
+    def add_project_section(self, project_id: int, name: str = 'New Section',
+                            color: str = '#E3F2FD', sort_order: int = 0) -> int:
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT INTO project_sections (project_id, name, color, sort_order)
+            VALUES (?, ?, ?, ?)
+        ''', (project_id, name, color, sort_order))
+        section_id = cursor.lastrowid
+        cursor.execute('''
+            INSERT INTO project_notes (section_id, content) VALUES (?, ?)
+        ''', (section_id, ''))
+        self.conn.commit()
+        return section_id
+
+    def update_project_section(self, section_id: int,
+                               name: Optional[str] = None,
+                               color: Optional[str] = None,
+                               collapsed: Optional[int] = None,
+                               sort_order: Optional[int] = None):
+        cursor = self.conn.cursor()
+        fields = []
+        values = []
+        if name is not None:
+            fields.append("name = ?")
+            values.append(name)
+        if color is not None:
+            fields.append("color = ?")
+            values.append(color)
+        if collapsed is not None:
+            fields.append("collapsed = ?")
+            values.append(collapsed)
+        if sort_order is not None:
+            fields.append("sort_order = ?")
+            values.append(sort_order)
+        if not fields:
+            return
+        values.append(section_id)
+        cursor.execute(f"UPDATE project_sections SET {', '.join(fields)} WHERE id = ?", values)
+        self.conn.commit()
+
+    def delete_project_section(self, section_id: int):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM project_sections WHERE id = ?", (section_id,))
+        self.conn.commit()
+
+    def get_project_note(self, section_id: int) -> Optional[ProjectNote]:
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT id, section_id, content, updated_at
+            FROM project_notes WHERE section_id = ?
+        ''', (section_id,))
+        row = cursor.fetchone()
+        return ProjectNote(*row) if row else None
+
+    def update_project_note(self, section_id: int, content: str):
+        cursor = self.conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''
+            INSERT INTO project_notes (section_id, content, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(section_id) DO UPDATE SET content = ?, updated_at = ?
+        ''', (section_id, content, now, content, now))
+        self.conn.commit()
 
     def get_segments_by_date(self, date_str: str) -> List[ActivitySegment]:
         cursor = self.conn.cursor()
