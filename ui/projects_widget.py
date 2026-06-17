@@ -326,8 +326,10 @@ class ProjectColumn(QFrame):
             }
         """)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._desired_height: int = 200
         self._setup_ui()
         self._load_sections()
+        self._update_height()
 
     def _setup_ui(self):
         self._collapsed = False
@@ -465,6 +467,19 @@ class ProjectColumn(QFrame):
         self._collapsed = not self._collapsed
         self.scroll.setVisible(not self._collapsed)
         self.lbl_toggle.setText("▸" if self._collapsed else "▾")
+        self._update_height()
+
+    def set_expanded_height(self, height: int):
+        self._desired_height = max(120, height)
+        self._update_height()
+
+    def _update_height(self):
+        if self._collapsed:
+            # Collapsed: only show header, keep text at the top of the card
+            header_h = self.header.sizeHint().height()
+            self.setFixedHeight(header_h + 20)
+        else:
+            self.setFixedHeight(self._desired_height)
 
     def _start_rename(self):
         text, ok = QInputDialog.getText(
@@ -572,6 +587,7 @@ class ProjectsWidget(QWidget):
         self.columns_layout = QVBoxLayout(self.columns_container)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
         self.columns_layout.setSpacing(12)
+        self.columns_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.columns_layout.addStretch()
 
         self.scroll.setWidget(self.columns_container)
@@ -586,8 +602,9 @@ class ProjectsWidget(QWidget):
         column_height = max(200, height // self._view_mode - 12)
         for i in range(self.columns_layout.count() - 1):  # skip stretch
             item = self.columns_layout.itemAt(i)
-            if item.widget():
-                item.widget().setFixedHeight(column_height)
+            widget = item.widget()
+            if isinstance(widget, ProjectColumn):
+                widget.set_expanded_height(column_height)
 
     def _load_projects(self):
         # Remove existing columns except stretch
