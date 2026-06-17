@@ -243,13 +243,14 @@ class SectionWidget(QFrame):
 
     def _toggle_bullet_list(self):
         cursor = self.editor.textCursor()
-        cursor.beginEditBlock()
-        block_fmt = cursor.blockFormat()
-        if block_fmt.objectType() == QTextFormat.FormatObjectType.ListFormatObject:
+        if cursor.currentList():
             cursor.setBlockFormat(QTextBlockFormat())
         else:
-            cursor.createList(QTextListFormat.Style.ListDisc)
-        cursor.endEditBlock()
+            list_fmt = QTextListFormat()
+            list_fmt.setStyle(QTextListFormat.Style.ListDisc)
+            cursor.createList(list_fmt)
+        self.editor.setTextCursor(cursor)
+        self.editor.setFocus()
 
     def _load_note(self):
         note = self.db.get_project_note(self.section_id)
@@ -561,14 +562,14 @@ class ProjectsWidget(QWidget):
 
         layout.addLayout(toolbar)
 
-        # Horizontal scroll area for project columns
+        # Vertical scroll area for project columns
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         self.columns_container = QWidget()
-        self.columns_layout = QHBoxLayout(self.columns_container)
+        self.columns_layout = QVBoxLayout(self.columns_container)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
         self.columns_layout.setSpacing(12)
         self.columns_layout.addStretch()
@@ -578,15 +579,15 @@ class ProjectsWidget(QWidget):
 
     def _on_view_changed(self):
         self._view_mode = self.cmb_view.currentData()
-        self._refresh_column_widths()
+        self._refresh_column_heights()
 
-    def _refresh_column_widths(self):
-        width = self.scroll.viewport().width()
-        column_width = max(280, width // self._view_mode - 12)
+    def _refresh_column_heights(self):
+        height = self.scroll.viewport().height()
+        column_height = max(200, height // self._view_mode - 12)
         for i in range(self.columns_layout.count() - 1):  # skip stretch
             item = self.columns_layout.itemAt(i)
             if item.widget():
-                item.widget().setFixedWidth(column_width)
+                item.widget().setFixedHeight(column_height)
 
     def _load_projects(self):
         # Remove existing columns except stretch
@@ -598,7 +599,7 @@ class ProjectsWidget(QWidget):
         projects = self.db.get_all_projects()
         for project in projects:
             self._add_project_column(project)
-        self._refresh_column_widths()
+        self._refresh_column_heights()
 
     def _add_project_column(self, project: Project):
         column = ProjectColumn(self.db, project)
@@ -620,21 +621,8 @@ class ProjectsWidget(QWidget):
         project = next((p for p in projects if p.id == project_id), None)
         if project:
             self._add_project_column(project)
-            self._refresh_column_widths()
+            self._refresh_column_heights()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._refresh_column_widths()
-
-    def wheelEvent(self, event):
-        # Convert vertical wheel movement into horizontal scrolling
-        # so users can scroll through projects with the mouse wheel.
-        delta = event.angleDelta().y()
-        if delta != 0:
-            hbar = self.scroll.horizontalScrollBar()
-            step = hbar.singleStep() * (1 if delta < 0 else -1)
-            # Negative delta = scroll down -> move content left -> increase value
-            hbar.setValue(hbar.value() - delta)
-            event.accept()
-        else:
-            super().wheelEvent(event)
+        self._refresh_column_heights()
