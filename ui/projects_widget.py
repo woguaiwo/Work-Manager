@@ -329,13 +329,21 @@ class ProjectColumn(QFrame):
         self._load_sections()
 
     def _setup_ui(self):
+        self._collapsed = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
         # Header
-        header = QHBoxLayout()
-        header.setSpacing(6)
+        self.header = QFrame()
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(6)
+
+        self.lbl_toggle = QLabel("▾")
+        self.lbl_toggle.setStyleSheet("font-size: 12px; color: #37474f;")
+        header_layout.addWidget(self.lbl_toggle)
 
         self.color_dot = QLabel()
         self.color_dot.setFixedSize(10, 10)
@@ -343,12 +351,12 @@ class ProjectColumn(QFrame):
             background-color: {self.project.color};
             border-radius: 5px;
         """)
-        header.addWidget(self.color_dot)
+        header_layout.addWidget(self.color_dot)
 
         self.lbl_name = QLabel(self.project.name)
         self.lbl_name.setStyleSheet("font-size: 14px; font-weight: bold; color: #37474f;")
-        header.addWidget(self.lbl_name)
-        header.addStretch()
+        header_layout.addWidget(self.lbl_name)
+        header_layout.addStretch()
 
         btn_add = QPushButton("+ " + trs("new_section"))
         btn_add.setStyleSheet("""
@@ -363,7 +371,7 @@ class ProjectColumn(QFrame):
         """)
         btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_add.clicked.connect(self._add_section)
-        header.addWidget(btn_add)
+        header_layout.addWidget(btn_add)
 
         btn_more = QToolButton()
         btn_more.setText("⋮")
@@ -394,9 +402,12 @@ class ProjectColumn(QFrame):
         action_delete.triggered.connect(self._delete_project)
         menu.addAction(action_delete)
         btn_more.setMenu(menu)
-        header.addWidget(btn_more)
+        header_layout.addWidget(btn_more)
 
-        layout.addLayout(header)
+        self.header.mousePressEvent = self._on_header_click
+        self.header.mouseDoubleClickEvent = self._on_header_double_click
+
+        layout.addWidget(self.header)
 
         # Scroll area for sections
         self.scroll = QScrollArea()
@@ -440,6 +451,28 @@ class ProjectColumn(QFrame):
     def _delete_section(self, section_id: int):
         self.db.delete_project_section(section_id)
         self._load_sections()
+
+    def _on_header_click(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._toggle_collapse()
+
+    def _on_header_double_click(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._start_rename()
+
+    def _toggle_collapse(self):
+        self._collapsed = not self._collapsed
+        self.scroll.setVisible(not self._collapsed)
+        self.lbl_toggle.setText("▸" if self._collapsed else "▾")
+
+    def _start_rename(self):
+        text, ok = QInputDialog.getText(
+            self, trs("rename_project"), trs("project_name"), text=self.project.name
+        )
+        if ok and text.strip():
+            self.project.name = text.strip()
+            self.lbl_name.setText(self.project.name)
+            self.db.update_project(self.project.id, name=self.project.name)
 
     def _rename_project(self):
         text, ok = QInputDialog.getText(self, trs("rename_project"), trs("project_name"),
@@ -592,3 +625,16 @@ class ProjectsWidget(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._refresh_column_widths()
+
+    def wheelEvent(self, event):
+        # Convert vertical wheel movement into horizontal scrolling
+        # so users can scroll through projects with the mouse wheel.
+        delta = event.angleDelta().y()
+        if delta != 0:
+            hbar = self.scroll.horizontalScrollBar()
+            step = hbar.singleStep() * (1 if delta < 0 else -1)
+            # Negative delta = scroll down -> move content left -> increase value
+            hbar.setValue(hbar.value() - delta)
+            event.accept()
+        else:
+            super().wheelEvent(event)
