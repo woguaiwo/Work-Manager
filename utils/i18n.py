@@ -83,6 +83,11 @@ class _I18nManager(QObject):
                 "view_1": "单栏视图",
                 "view_2": "双栏视图",
                 "view_3": "三栏视图",
+                "fmt_bold": "加粗",
+                "fmt_italic": "斜体",
+                "fmt_color": "颜色",
+                "fmt_highlight": "高亮",
+                "fmt_list": "列表",
                 # --- timeline_container ---
                 "prev_day": "前一天",
                 "today_btn": "今天",
@@ -245,6 +250,11 @@ class _I18nManager(QObject):
                 "view_1": "1 Column",
                 "view_2": "2 Columns",
                 "view_3": "3 Columns",
+                "fmt_bold": "Bold",
+                "fmt_italic": "Italic",
+                "fmt_color": "Color",
+                "fmt_highlight": "Highlight",
+                "fmt_list": "List",
                 # --- timeline_container ---
                 "prev_day": "Previous Day",
                 "today_btn": "Today",

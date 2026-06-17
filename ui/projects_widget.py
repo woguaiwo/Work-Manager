@@ -66,6 +66,8 @@ class SectionWidget(QFrame):
     renamed = pyqtSignal(int, str)
     deleted = pyqtSignal(int)
 
+    SAVE_DELAY_MS = 500
+
     def __init__(self, db: Database, section: ProjectSection, parent=None):
         super().__init__(parent)
         self.db = db
@@ -73,6 +75,7 @@ class SectionWidget(QFrame):
         self._collapsed = bool(section.collapsed)
         self._color = section.color or SECTION_PALETTE[0]
         self._name = section.name or trs("new_section")
+        self._pending_content: Optional[str] = None
         self._setup_ui()
         self._load_note()
 
@@ -131,11 +134,11 @@ class SectionWidget(QFrame):
         self.toolbar.setSpacing(4)
         self.toolbar.setContentsMargins(4, 4, 4, 0)
 
-        self._make_tool_btn("B", self._toggle_bold, "font-weight: bold;")
-        self._make_tool_btn("I", self._toggle_italic, "font-style: italic;")
-        self._make_tool_btn("A", self._set_text_color, "")
-        self._make_tool_btn("▌", self._set_highlight_color, "")
-        self._make_tool_btn("•", self._toggle_bullet_list, "")
+        self._make_tool_btn(trs("fmt_bold"), self._toggle_bold, "font-weight: bold;")
+        self._make_tool_btn(trs("fmt_italic"), self._toggle_italic, "font-style: italic;")
+        self._make_tool_btn(trs("fmt_color"), self._set_text_color, "")
+        self._make_tool_btn(trs("fmt_highlight"), self._set_highlight_color, "")
+        self._make_tool_btn(trs("fmt_list"), self._toggle_bullet_list, "")
 
         toolbar_widget = QWidget()
         toolbar_widget.setLayout(self.toolbar)
@@ -146,8 +149,37 @@ class SectionWidget(QFrame):
         # Editor
         self.editor = NoteEditor()
         self.editor.setVisible(not self._collapsed)
-        self.editor.content_changed.connect(self._save_note)
+        self.editor.content_changed.connect(self._on_content_changed)
+        self.editor.focusOutEvent = self._on_editor_focus_out
         layout.addWidget(self.editor)
+
+        # Save timer must exist before any setHtml can fire textChanged
+        self._init_save_timer()
+
+    def _init_save_timer(self):
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._flush_save)
+
+    def _on_content_changed(self):
+        self._pending_content = self.editor.toHtml()
+        self._save_timer.stop()
+        self._save_timer.start(self.SAVE_DELAY_MS)
+
+    def _on_editor_focus_out(self, event):
+        # Save immediately when user leaves the editor
+        self._flush_save()
+        QTextEdit.focusOutEvent(self.editor, event)
+
+    def _flush_save(self):
+        self._save_timer.stop()
+        if self._pending_content is not None:
+            self.db.update_project_note(self.section_id, self._pending_content)
+            self._pending_content = None
+
+    def _save_note(self):
+        # Kept for explicit save calls; debounced path uses _on_content_changed
+        self.db.update_project_note(self.section_id, self.editor.toHtml())
 
     def _make_tool_btn(self, text: str, callback, style: str):
         btn = QPushButton(text)
@@ -156,9 +188,10 @@ class SectionWidget(QFrame):
                 background-color: #f5f5f5;
                 border: 1px solid #e0e0e0;
                 border-radius: 4px;
-                padding: 2px 8px;
-                font-size: 12px;
+                padding: 2px 6px;
+                font-size: 11px;
                 color: #37474f;
+                min-width: 36px;
             }
             QPushButton:hover { background-color: #e0e0e0; }
             QPushButton:pressed { background-color: #d0d0d0; }
@@ -169,19 +202,37 @@ class SectionWidget(QFrame):
         btn.clicked.connect(callback)
         self.toolbar.addWidget(btn)
 
+    def _is_selection_bold(self) -> bool:
+        cursor = self.editor.textCursor()
+        if cursor.hasSelection():
+            fmt = cursor.charFormat()
+            return fmt.fontWeight() == QFont.Weight.Bold
+        return self.editor.fontWeight() == QFont.Weight.Bold
+
     def _toggle_bold(self):
-        if self.editor.fontWeight() == QFont.Weight.Bold:
-            self.editor.setFontWeight(QFont.Weight.Normal)
-        else:
-            self.editor.setFontWeight(QFont.Weight.Bold)
+        fmt = QTextCharFormat()
+        fmt.setFontWeight(
+            QFont.Weight.Normal if self._is_selection_bold() else QFont.Weight.Bold
+        )
+        self.editor.mergeCurrentCharFormat(fmt)
+
+    def _is_selection_italic(self) -> bool:
+        cursor = self.editor.textCursor()
+        if cursor.hasSelection():
+            return cursor.charFormat().fontItalic()
+        return self.editor.fontItalic()
 
     def _toggle_italic(self):
-        self.editor.setFontItalic(not self.editor.fontItalic())
+        fmt = QTextCharFormat()
+        fmt.setFontItalic(not self._is_selection_italic())
+        self.editor.mergeCurrentCharFormat(fmt)
 
     def _set_text_color(self):
         color = QColorDialog.getColor(Qt.GlobalColor.black, self)
         if color.isValid():
-            self.editor.setTextColor(color)
+            fmt = QTextCharFormat()
+            fmt.setForeground(color)
+            self.editor.mergeCurrentCharFormat(fmt)
 
     def _set_highlight_color(self):
         color = QColorDialog.getColor(QColor("#FFEB3B"), self)
@@ -205,9 +256,6 @@ class SectionWidget(QFrame):
         if note and note.content:
             self.editor.setHtml(note.content)
 
-    def _save_note(self):
-        self.db.update_project_note(self.section_id, self.editor.toHtml())
-
     def _on_header_click(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._toggle()
@@ -217,6 +265,7 @@ class SectionWidget(QFrame):
             self._start_rename()
 
     def _toggle(self):
+        self._flush_save()
         self._collapsed = not self._collapsed
         self.editor.setVisible(not self._collapsed)
         self.toolbar_widget.setVisible(not self._collapsed)
@@ -254,6 +303,7 @@ class SectionWidget(QFrame):
         edit.returnPressed.connect(finish)
 
     def _request_delete(self):
+        self._flush_save()
         self.deleted.emit(self.section_id)
 
 
@@ -524,7 +574,15 @@ class ProjectsWidget(QWidget):
 
     def _add_project(self):
         color = random.choice(PROJECT_PALETTE)
-        project_id = self.db.add_project(color=color)
+        default_name = trs("new_project")
+        name, ok = QInputDialog.getText(
+            self, trs("new_project"), trs("project_name"), text=default_name
+        )
+        if ok and name.strip():
+            project_name = name.strip()
+        else:
+            project_name = default_name
+        project_id = self.db.add_project(name=project_name, color=color)
         projects = self.db.get_all_projects()
         project = next((p for p in projects if p.id == project_id), None)
         if project:
