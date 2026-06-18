@@ -66,7 +66,7 @@ class SectionWidget(QFrame):
     renamed = pyqtSignal(int, str)
     deleted = pyqtSignal(int)
 
-    SAVE_DELAY_MS = 500
+    SAVE_DELAY_MS = 2000
 
     def __init__(self, db: Database, section: ProjectSection, parent=None):
         super().__init__(parent)
