@@ -5,7 +5,7 @@ import random
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QTextEdit, QLineEdit, QComboBox,
     QSizePolicy, QApplication, QMessageBox, QToolButton, QMenu,
     QColorDialog, QInputDialog
@@ -312,6 +312,7 @@ class ProjectColumn(QFrame):
     """Vertical column representing one project."""
 
     deleted = pyqtSignal(int)
+    collapsed_changed = pyqtSignal(int, bool)
 
     def __init__(self, db: Database, project: Project, parent=None):
         super().__init__(parent)
@@ -327,12 +328,12 @@ class ProjectColumn(QFrame):
         """)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._desired_height: int = 200
+        self._collapsed: bool = bool(project.collapsed)
         self._setup_ui()
         self._load_sections()
         self._update_height()
 
     def _setup_ui(self):
-        self._collapsed = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
@@ -344,7 +345,7 @@ class ProjectColumn(QFrame):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(6)
 
-        self.lbl_toggle = QLabel("▾")
+        self.lbl_toggle = QLabel("▸" if self._collapsed else "▾")
         self.lbl_toggle.setStyleSheet("font-size: 12px; color: #37474f;")
         header_layout.addWidget(self.lbl_toggle)
 
@@ -417,6 +418,7 @@ class ProjectColumn(QFrame):
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.scroll.setVisible(not self._collapsed)
 
         self.sections_container = QWidget()
         self.sections_layout = QVBoxLayout(self.sections_container)
@@ -468,6 +470,7 @@ class ProjectColumn(QFrame):
         self.scroll.setVisible(not self._collapsed)
         self.lbl_toggle.setText("▸" if self._collapsed else "▾")
         self._update_height()
+        self.collapsed_changed.emit(self.project.id, self._collapsed)
 
     def set_expanded_height(self, height: int):
         self._desired_height = max(120, height)
@@ -584,32 +587,76 @@ class ProjectsWidget(QWidget):
         self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         self.columns_container = QWidget()
-        self.columns_layout = QVBoxLayout(self.columns_container)
+        self.columns_layout = QGridLayout(self.columns_container)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
         self.columns_layout.setSpacing(12)
         self.columns_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.columns_layout.addStretch()
 
         self.scroll.setWidget(self.columns_container)
         layout.addWidget(self.scroll)
 
+        # Scroll position persistence timer (debounced)
+        self._scroll_save_timer = QTimer(self)
+        self._scroll_save_timer.setSingleShot(True)
+        self._scroll_save_timer.timeout.connect(self._save_scroll_position)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
+
+        # Restore view mode
+        saved_mode = self.db.get_setting('projects_view_mode', '1')
+        try:
+            self._view_mode = max(1, min(3, int(saved_mode)))
+        except ValueError:
+            self._view_mode = 1
+        self.cmb_view.setCurrentIndex(self._view_mode - 1)
+
     def _on_view_changed(self):
         self._view_mode = self.cmb_view.currentData()
-        self._refresh_column_heights()
+        self.db.set_setting('projects_view_mode', str(self._view_mode))
+        self._relayout_projects()
+
+    def _on_scroll_changed(self):
+        self._scroll_save_timer.stop()
+        self._scroll_save_timer.start(200)
+
+    def _save_scroll_position(self):
+        self.db.set_setting('projects_scroll_y', str(self.scroll.verticalScrollBar().value()))
+
+    def _restore_scroll_position(self):
+        saved_y = self.db.get_setting('projects_scroll_y', '0')
+        try:
+            y = int(saved_y)
+        except ValueError:
+            y = 0
+        self.scroll.verticalScrollBar().setValue(y)
+
+    def _relayout_projects(self):
+        # Remove all widgets from grid but keep references
+        columns = []
+        for i in range(self.columns_layout.count()):
+            item = self.columns_layout.itemAt(i)
+            if item.widget():
+                columns.append(item.widget())
+                self.columns_layout.removeWidget(item.widget())
+
+        # Re-add in grid according to view mode
+        for idx, column in enumerate(columns):
+            row = idx // self._view_mode
+            col = idx % self._view_mode
+            self.columns_layout.addWidget(column, row, col)
 
     def _refresh_column_heights(self):
         height = self.scroll.viewport().height()
-        column_height = max(200, height // self._view_mode - 12)
-        for i in range(self.columns_layout.count() - 1):  # skip stretch
+        column_height = max(200, height - 24)
+        for i in range(self.columns_layout.count()):
             item = self.columns_layout.itemAt(i)
             widget = item.widget()
             if isinstance(widget, ProjectColumn):
                 widget.set_expanded_height(column_height)
 
     def _load_projects(self):
-        # Remove existing columns except stretch
-        while self.columns_layout.count() > 1:
-            item = self.columns_layout.takeAt(0)
+        # Remove existing columns from grid
+        for i in range(self.columns_layout.count() - 1, -1, -1):
+            item = self.columns_layout.itemAt(i)
             if item.widget():
                 item.widget().deleteLater()
 
@@ -617,11 +664,25 @@ class ProjectsWidget(QWidget):
         for project in projects:
             self._add_project_column(project)
         self._refresh_column_heights()
+        self._restore_scroll_position()
 
     def _add_project_column(self, project: Project):
         column = ProjectColumn(self.db, project)
         column.deleted.connect(self._load_projects)
-        self.columns_layout.insertWidget(self.columns_layout.count() - 1, column)
+        column.collapsed_changed.connect(self._on_project_collapsed)
+
+        idx = self.columns_layout.count()
+        for i in range(self.columns_layout.count()):
+            if self.columns_layout.itemAt(i).widget() is None:
+                idx = i
+                break
+
+        row = idx // self._view_mode
+        col = idx % self._view_mode
+        self.columns_layout.addWidget(column, row, col)
+
+    def _on_project_collapsed(self, project_id: int, collapsed: bool):
+        self.db.update_project(project_id, collapsed=int(collapsed))
 
     def _add_project(self):
         color = random.choice(PROJECT_PALETTE)

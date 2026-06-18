@@ -69,6 +69,7 @@ class Project:
     name: str
     color: str
     sort_order: int
+    collapsed: int
     created_at: str
 
 
@@ -203,9 +204,16 @@ class Database:
                 name TEXT NOT NULL DEFAULT 'New Project',
                 color TEXT DEFAULT '#5B8DB8',
                 sort_order INTEGER DEFAULT 0,
+                collapsed INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        # Migration: add collapsed column if table exists without it
+        cursor.execute("PRAGMA table_info(projects)")
+        project_cols = [col[1] for col in cursor.fetchall()]
+        if 'collapsed' not in project_cols:
+            cursor.execute("ALTER TABLE projects ADD COLUMN collapsed INTEGER DEFAULT 0")
+            _log.info("Migrated projects: added collapsed column")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS project_sections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -495,23 +503,24 @@ class Database:
     def get_all_projects(self) -> List[Project]:
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT id, name, color, sort_order, created_at
+            SELECT id, name, color, sort_order, collapsed, created_at
             FROM projects ORDER BY sort_order, id
         ''')
         return [Project(*r) for r in cursor.fetchall()]
 
     def add_project(self, name: str = 'New Project', color: str = '#5B8DB8',
-                    sort_order: int = 0) -> int:
+                    sort_order: int = 0, collapsed: int = 0) -> int:
         cursor = self.conn.cursor()
         cursor.execute('''
-            INSERT INTO projects (name, color, sort_order) VALUES (?, ?, ?)
-        ''', (name, color, sort_order))
+            INSERT INTO projects (name, color, sort_order, collapsed) VALUES (?, ?, ?, ?)
+        ''', (name, color, sort_order, collapsed))
         self.conn.commit()
         return cursor.lastrowid
 
     def update_project(self, project_id: int, name: Optional[str] = None,
                        color: Optional[str] = None,
-                       sort_order: Optional[int] = None):
+                       sort_order: Optional[int] = None,
+                       collapsed: Optional[int] = None):
         cursor = self.conn.cursor()
         fields = []
         values = []
@@ -524,6 +533,9 @@ class Database:
         if sort_order is not None:
             fields.append("sort_order = ?")
             values.append(sort_order)
+        if collapsed is not None:
+            fields.append("collapsed = ?")
+            values.append(collapsed)
         if not fields:
             return
         values.append(project_id)
