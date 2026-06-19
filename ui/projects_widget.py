@@ -728,6 +728,7 @@ class ProjectsWidget(QWidget):
 
         self.setAcceptDrops(True)
         self._columns = []
+        self._column_containers = []
 
         # Scroll position persistence timer (debounced)
         self._scroll_save_timer = QTimer(self)
@@ -791,6 +792,7 @@ class ProjectsWidget(QWidget):
                 col_widget.deleteLater()
 
             # Create one vertical column per active view slot
+            self._column_containers = []
             column_layouts = []
             for _ in range(self._view_mode):
                 container = QWidget(self.columns_container)
@@ -800,6 +802,7 @@ class ProjectsWidget(QWidget):
                 layout.setAlignment(Qt.AlignmentFlag.AlignTop)
                 container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 self.columns_layout.addWidget(container, 1)
+                self._column_containers.append(container)
                 column_layouts.append(layout)
 
             # Distribute project columns row-major into independent vertical columns
@@ -855,35 +858,38 @@ class ProjectsWidget(QWidget):
         return len(self._columns)
 
     def _update_drop_indicator(self, insert_idx: int):
-        if not self._columns:
+        if not self._columns or not self._column_containers:
             return
-        container_width = self.columns_container.width()
-        container_height = self.columns_container.height()
         gap = 6  # place line in the middle of the 12px spacing
         thickness = 3
+
         if insert_idx < len(self._columns):
             target = self._columns[insert_idx]
             rect = target.geometry()
             col = insert_idx % self._view_mode
+            col_container = self._column_containers[col]
+            col_rect = col_container.geometry()
             if col == 0:
-                # Horizontal line above the first card in a row
-                y = max(0, rect.top() - gap)
-                self._drop_indicator.setGeometry(0, y, container_width, thickness)
+                # Horizontal line within the target column above the card
+                y = max(col_rect.top(), rect.top() - gap)
+                self._drop_indicator.setGeometry(col_rect.left(), y, col_rect.width(), thickness)
             else:
-                # Vertical line to the left of a card in the middle/end of a row
+                # Vertical line in the gap between column containers
                 x = max(0, rect.left() - gap)
                 self._drop_indicator.setGeometry(x, rect.top(), thickness, rect.height())
         else:
             last = self._columns[-1]
             rect = last.geometry()
             last_col = (len(self._columns) - 1) % self._view_mode
+            col_container = self._column_containers[last_col]
+            col_rect = col_container.geometry()
             if last_col == self._view_mode - 1:
-                # Horizontal line below the last card when the row is full
-                y = min(container_height - thickness, rect.bottom() + gap)
-                self._drop_indicator.setGeometry(0, y, container_width, thickness)
+                # Horizontal line within the last column below the last card
+                y = min(col_rect.bottom() - thickness, rect.bottom() + gap)
+                self._drop_indicator.setGeometry(col_rect.left(), y, col_rect.width(), thickness)
             else:
                 # Vertical line to the right of the last card when the row is not full
-                x = min(container_width - thickness, rect.right() + gap)
+                x = min(self.columns_container.width() - thickness, rect.right() + gap)
                 self._drop_indicator.setGeometry(x, rect.top(), thickness, rect.height())
         self._drop_indicator.raise_()
         self._drop_indicator.show()
