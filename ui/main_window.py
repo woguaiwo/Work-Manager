@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):
         elif index == 3:
             self.calendar_widget.refresh()
         elif index == 4:
-            self.projects_widget._load_projects()
+            self.projects_widget._ensure_loaded()
 
     def _open_task_manager(self):
         dialog = TaskManagerDialog(self.db, self)
@@ -481,9 +481,15 @@ class MainWindow(QMainWindow):
     def _init_indicator(self):
         # parent=None so the indicator stays visible when main window is minimized
         self.indicator = ProjectIndicator(self.tracker, self.db, parent=None)
-        self.indicator.show()
+        self._indicator_shown = False
         self.indicator.show_main_window.connect(self.show_normal)
         self.indicator.task_changed.connect(self._on_indicator_task_changed)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, 'indicator') and not getattr(self, '_indicator_shown', False):
+            self._indicator_shown = True
+            QTimer.singleShot(300, self.indicator.show)
 
     def _on_indicator_task_changed(self, task_id: int):
         # Refresh dashboard and timeline when task changes via indicator

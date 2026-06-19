@@ -3,6 +3,7 @@ Projects page with rich-text notes organized into collapsible sections.
 """
 import random
 from datetime import datetime
+from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
@@ -10,7 +11,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QApplication, QMessageBox, QToolButton, QMenu,
     QColorDialog, QInputDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
 from PyQt6.QtGui import (
     QColor, QFont, QAction, QTextCharFormat, QTextCursor, QKeyEvent,
     QTextListFormat, QTextBlockFormat, QTextFormat
@@ -19,6 +20,7 @@ from PyQt6.QtGui import (
 from core.database import Database, Project, ProjectSection
 from utils.i18n import trs
 from utils.logger import get_logger
+
 
 _log = get_logger("projects")
 
@@ -86,7 +88,7 @@ class SectionWidget(QFrame):
         layout.setSpacing(0)
 
         # Header
-        self.header = QFrame()
+        self.header = QFrame(self)
         self.header.setFixedHeight(32)
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.setStyleSheet(f"""
@@ -99,17 +101,19 @@ class SectionWidget(QFrame):
         header_layout.setContentsMargins(8, 0, 4, 0)
         header_layout.setSpacing(4)
 
-        self.lbl_toggle = QLabel("▾" if not self._collapsed else "▸")
+        self.lbl_toggle = QLabel("▾" if not self._collapsed else "▸", self)
         self.lbl_toggle.setStyleSheet("font-size: 12px; color: #37474f;")
         header_layout.addWidget(self.lbl_toggle)
 
-        self.lbl_name = QLabel(self._name)
+        self.lbl_name = QLabel(self._name, self)
         self.lbl_name.setStyleSheet("font-size: 12px; font-weight: bold; color: #37474f;")
         self.lbl_name.setWordWrap(False)
+        self.lbl_name.setCursor(Qt.CursorShape.IBeamCursor)
+        self.lbl_name.mousePressEvent = self._on_name_click
         header_layout.addWidget(self.lbl_name)
         header_layout.addStretch()
 
-        self.btn_delete = QToolButton()
+        self.btn_delete = QToolButton(self)
         self.btn_delete.setText("×")
         self.btn_delete.setStyleSheet("""
             QToolButton {
@@ -125,7 +129,6 @@ class SectionWidget(QFrame):
         header_layout.addWidget(self.btn_delete)
 
         self.header.mousePressEvent = self._on_header_click
-        self.header.mouseDoubleClickEvent = self._on_header_double_click
 
         layout.addWidget(self.header)
 
@@ -140,14 +143,14 @@ class SectionWidget(QFrame):
         self._make_tool_btn(trs("fmt_highlight"), self._set_highlight_color, "")
         self._make_tool_btn(trs("fmt_list"), self._toggle_bullet_list, "")
 
-        toolbar_widget = QWidget()
+        toolbar_widget = QWidget(self)
         toolbar_widget.setLayout(self.toolbar)
         toolbar_widget.setVisible(not self._collapsed)
         self.toolbar_widget = toolbar_widget
         layout.addWidget(toolbar_widget)
 
         # Editor
-        self.editor = NoteEditor()
+        self.editor = NoteEditor(self)
         self.editor.setVisible(not self._collapsed)
         self.editor.content_changed.connect(self._on_content_changed)
         self.editor.focusOutEvent = self._on_editor_focus_out
@@ -155,6 +158,12 @@ class SectionWidget(QFrame):
 
         # Save timer must exist before any setHtml can fire textChanged
         self._init_save_timer()
+
+        # Collapsed sections should not stretch; expanded sections fill space
+        if self._collapsed:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        else:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def _init_save_timer(self):
         self._save_timer = QTimer(self)
@@ -182,7 +191,7 @@ class SectionWidget(QFrame):
         self.db.update_project_note(self.section_id, self.editor.toHtml())
 
     def _make_tool_btn(self, text: str, callback, style: str):
-        btn = QPushButton(text)
+        btn = QPushButton(text, self)
         base_style = """
             QPushButton {
                 background-color: #f5f5f5;
@@ -261,7 +270,7 @@ class SectionWidget(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self._toggle()
 
-    def _on_header_double_click(self, event):
+    def _on_name_click(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._start_rename()
 
@@ -271,6 +280,12 @@ class SectionWidget(QFrame):
         self.editor.setVisible(not self._collapsed)
         self.toolbar_widget.setVisible(not self._collapsed)
         self.lbl_toggle.setText("▸" if self._collapsed else "▾")
+        # Collapsed sections keep header-only height; expanded sections stretch
+        if self._collapsed:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        else:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.updateGeometry()
         self.db.update_project_section(self.section_id, collapsed=int(self._collapsed))
 
     def _start_rename(self):
@@ -291,7 +306,20 @@ class SectionWidget(QFrame):
         edit.show()
         edit.setFocus()
 
+        self._rename_edit = edit
+
         def finish():
+            # Disconnect to prevent double firing
+            try:
+                edit.editingFinished.disconnect(finish)
+            except Exception:
+                pass
+            try:
+                edit.returnPressed.disconnect(finish)
+            except Exception:
+                pass
+            QApplication.instance().removeEventFilter(click_filter)
+
             new_name = edit.text().strip()
             if new_name:
                 self._name = new_name
@@ -299,9 +327,26 @@ class SectionWidget(QFrame):
                 self.db.update_project_section(self.section_id, name=new_name)
                 self.renamed.emit(self.section_id, new_name)
             edit.deleteLater()
+            self._rename_edit = None
 
         edit.editingFinished.connect(finish)
         edit.returnPressed.connect(finish)
+
+        # Finish editing when clicking outside the rename line edit
+        class ClickOutsideFilter(QObject):
+            def __init__(self, target, callback):
+                super().__init__(target)
+                self._target = target
+                self._callback = callback
+
+            def eventFilter(self, obj, event):
+                if event.type() == QEvent.Type.MouseButtonPress:
+                    if isinstance(obj, QWidget) and obj is not self._target and not self._target.isAncestorOf(obj):
+                        self._callback()
+                return False
+
+        click_filter = ClickOutsideFilter(edit, finish)
+        QApplication.instance().installEventFilter(click_filter)
 
     def _request_delete(self):
         self._flush_save()
@@ -329,6 +374,7 @@ class ProjectColumn(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._desired_height: int = 200
         self._collapsed: bool = bool(project.collapsed)
+        self._sections_loaded: bool = False
         self._setup_ui()
         self._load_sections()
         self._update_height()
@@ -339,17 +385,17 @@ class ProjectColumn(QFrame):
         layout.setSpacing(8)
 
         # Header
-        self.header = QFrame()
+        self.header = QFrame(self)
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         header_layout = QHBoxLayout(self.header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(6)
 
-        self.lbl_toggle = QLabel("▸" if self._collapsed else "▾")
+        self.lbl_toggle = QLabel("▸" if self._collapsed else "▾", self)
         self.lbl_toggle.setStyleSheet("font-size: 12px; color: #37474f;")
         header_layout.addWidget(self.lbl_toggle)
 
-        self.color_dot = QLabel()
+        self.color_dot = QLabel(self)
         self.color_dot.setFixedSize(10, 10)
         self.color_dot.setStyleSheet(f"""
             background-color: {self.project.color};
@@ -357,12 +403,12 @@ class ProjectColumn(QFrame):
         """)
         header_layout.addWidget(self.color_dot)
 
-        self.lbl_name = QLabel(self.project.name)
+        self.lbl_name = QLabel(self.project.name, self)
         self.lbl_name.setStyleSheet("font-size: 14px; font-weight: bold; color: #37474f;")
         header_layout.addWidget(self.lbl_name)
         header_layout.addStretch()
 
-        btn_add = QPushButton("+ " + trs("new_section"))
+        btn_add = QPushButton("+ " + trs("new_section"), self)
         btn_add.setStyleSheet("""
             QPushButton {
                 background-color: #e3f2fd;
@@ -377,7 +423,7 @@ class ProjectColumn(QFrame):
         btn_add.clicked.connect(self._add_section)
         header_layout.addWidget(btn_add)
 
-        btn_more = QToolButton()
+        btn_more = QToolButton(self)
         btn_more.setText("⋮")
         btn_more.setStyleSheet("""
             QToolButton {
@@ -414,24 +460,28 @@ class ProjectColumn(QFrame):
         layout.addWidget(self.header)
 
         # Scroll area for sections
-        self.scroll = QScrollArea()
+        self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         self.scroll.setVisible(not self._collapsed)
 
-        self.sections_container = QWidget()
+        self.sections_container = QWidget(self.scroll)
         self.sections_layout = QVBoxLayout(self.sections_container)
         self.sections_layout.setContentsMargins(0, 0, 0, 0)
         self.sections_layout.setSpacing(6)
-        self.sections_layout.addStretch()
+        self.sections_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # No stretch: sections expand to fill the project column height
 
         self.scroll.setWidget(self.sections_container)
         layout.addWidget(self.scroll)
 
     def _load_sections(self):
-        # Remove existing section widgets except stretch
-        while self.sections_layout.count() > 1:
+        if self._sections_loaded:
+            return
+        self._sections_loaded = True
+        # Remove existing section widgets
+        while self.sections_layout.count():
             item = self.sections_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
@@ -441,19 +491,22 @@ class ProjectColumn(QFrame):
             self._insert_section_widget(section)
 
     def _insert_section_widget(self, section: ProjectSection):
-        widget = SectionWidget(self.db, section)
+        widget = SectionWidget(self.db, section, parent=self.sections_container)
         widget.renamed.connect(lambda sid, name: None)
         widget.deleted.connect(self._delete_section)
-        # Insert before stretch
-        self.sections_layout.insertWidget(self.sections_layout.count() - 1, widget)
+        self.sections_layout.addWidget(widget)
 
     def _add_section(self):
+        if not self._sections_loaded:
+            self._load_sections()
         color = random.choice(SECTION_PALETTE)
         section_id = self.db.add_project_section(self.project.id, color=color)
         section = self.db.get_project_sections(self.project.id)[-1]
         self._insert_section_widget(section)
 
     def _delete_section(self, section_id: int):
+        if not self._sections_loaded:
+            self._load_sections()
         self.db.delete_project_section(section_id)
         self._load_sections()
 
@@ -467,6 +520,8 @@ class ProjectColumn(QFrame):
 
     def _toggle_collapse(self):
         self._collapsed = not self._collapsed
+        if not self._collapsed and not self._sections_loaded:
+            self._load_sections()
         self.scroll.setVisible(not self._collapsed)
         self.lbl_toggle.setText("▸" if self._collapsed else "▾")
         self._update_height()
@@ -529,7 +584,15 @@ class ProjectsWidget(QWidget):
         self.db = db
         self._view_mode = 1
         self._setup_ui()
-        self._load_projects()
+        # Defer loading projects until the page is first shown
+        self._loaded = False
+
+    def _ensure_loaded(self):
+        if not self._loaded:
+            self._loaded = True
+            self._load_projects()
+        else:
+            self._restore_scroll_position()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -540,12 +603,12 @@ class ProjectsWidget(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
 
-        self.lbl_title = QLabel(trs("projects"))
+        self.lbl_title = QLabel(trs("projects"), self)
         self.lbl_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #37474f;")
         toolbar.addWidget(self.lbl_title)
         toolbar.addStretch()
 
-        btn_add = QPushButton("+ " + trs("new_project"))
+        btn_add = QPushButton("+ " + trs("new_project"), self)
         btn_add.setStyleSheet("""
             QPushButton {
                 background-color: #5B8DB8;
@@ -561,7 +624,7 @@ class ProjectsWidget(QWidget):
         btn_add.clicked.connect(self._add_project)
         toolbar.addWidget(btn_add)
 
-        self.cmb_view = QComboBox()
+        self.cmb_view = QComboBox(self)
         self.cmb_view.addItem(trs("view_1"), 1)
         self.cmb_view.addItem(trs("view_2"), 2)
         self.cmb_view.addItem(trs("view_3"), 3)
@@ -581,12 +644,12 @@ class ProjectsWidget(QWidget):
         layout.addLayout(toolbar)
 
         # Vertical scroll area for project columns
-        self.scroll = QScrollArea()
+        self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
-        self.columns_container = QWidget()
+        self.columns_container = QWidget(self.scroll)
         self.columns_layout = QGridLayout(self.columns_container)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
         self.columns_layout.setSpacing(12)
@@ -594,6 +657,8 @@ class ProjectsWidget(QWidget):
 
         self.scroll.setWidget(self.columns_container)
         layout.addWidget(self.scroll)
+
+        self._columns = []
 
         # Scroll position persistence timer (debounced)
         self._scroll_save_timer = QTimer(self)
@@ -630,56 +695,71 @@ class ProjectsWidget(QWidget):
         self.scroll.verticalScrollBar().setValue(y)
 
     def _relayout_projects(self):
-        # Remove all widgets from grid but keep references
-        columns = []
-        for i in range(self.columns_layout.count()):
-            item = self.columns_layout.itemAt(i)
-            if item.widget():
-                columns.append(item.widget())
-                self.columns_layout.removeWidget(item.widget())
+        self.setUpdatesEnabled(False)
+        try:
+            # Detach all project columns from the grid
+            for i in range(self.columns_layout.count() - 1, -1, -1):
+                item = self.columns_layout.takeAt(i)
+                if item.widget():
+                    item.widget().setParent(None)
 
-        # Re-add in grid according to view mode
-        for idx, column in enumerate(columns):
-            row = idx // self._view_mode
-            col = idx % self._view_mode
-            self.columns_layout.addWidget(column, row, col)
+            # Equal width for active columns, no stretch for unused ones
+            for c in range(3):
+                self.columns_layout.setColumnStretch(c, 1 if c < self._view_mode else 0)
+
+            # Row-major order: left-to-right, then top-to-bottom
+            for idx, column in enumerate(self._columns):
+                row = idx // self._view_mode
+                col = idx % self._view_mode
+                self.columns_layout.addWidget(
+                    column, row, col, alignment=Qt.AlignmentFlag.AlignTop
+                )
+        finally:
+            self.setUpdatesEnabled(True)
+        self._refresh_column_heights()
 
     def _refresh_column_heights(self):
         height = self.scroll.viewport().height()
         column_height = max(200, height - 24)
-        for i in range(self.columns_layout.count()):
-            item = self.columns_layout.itemAt(i)
-            widget = item.widget()
-            if isinstance(widget, ProjectColumn):
-                widget.set_expanded_height(column_height)
+        for column in self._columns:
+            column.set_expanded_height(column_height)
 
     def _load_projects(self):
-        # Remove existing columns from grid
-        for i in range(self.columns_layout.count() - 1, -1, -1):
-            item = self.columns_layout.itemAt(i)
-            if item.widget():
-                item.widget().deleteLater()
+        self.setUpdatesEnabled(False)
+        self.columns_container.hide()
+        try:
+            # Clean up existing project columns
+            for column in self._columns:
+                column.deleteLater()
+            self._columns.clear()
 
-        projects = self.db.get_all_projects()
-        for project in projects:
-            self._add_project_column(project)
-        self._refresh_column_heights()
-        self._restore_scroll_position()
+            projects = self.db.get_all_projects()
+            for project in projects:
+                column = ProjectColumn(self.db, project, parent=self.columns_container)
+                column.hide()
+                column.deleted.connect(self._on_project_deleted)
+                column.collapsed_changed.connect(self._on_project_collapsed)
+                self._columns.append(column)
+
+            self._relayout_projects()
+            self._refresh_column_heights()
+            self._restore_scroll_position()
+        finally:
+            for column in self._columns:
+                column.show()
+            self.columns_container.show()
+            self.setUpdatesEnabled(True)
 
     def _add_project_column(self, project: Project):
-        column = ProjectColumn(self.db, project)
-        column.deleted.connect(self._load_projects)
+        column = ProjectColumn(self.db, project, parent=self.columns_container)
+        column.deleted.connect(self._on_project_deleted)
         column.collapsed_changed.connect(self._on_project_collapsed)
+        self._columns.append(column)
+        self._relayout_projects()
 
-        idx = self.columns_layout.count()
-        for i in range(self.columns_layout.count()):
-            if self.columns_layout.itemAt(i).widget() is None:
-                idx = i
-                break
-
-        row = idx // self._view_mode
-        col = idx % self._view_mode
-        self.columns_layout.addWidget(column, row, col)
+    def _on_project_deleted(self, project_id: int):
+        self._columns = [c for c in self._columns if c.project.id != project_id]
+        self._relayout_projects()
 
     def _on_project_collapsed(self, project_id: int, collapsed: bool):
         self.db.update_project(project_id, collapsed=int(collapsed))
