@@ -11,11 +11,12 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QApplication, QMessageBox, QToolButton, QMenu,
     QColorDialog, QInputDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent, QMimeData
 from PyQt6.QtGui import (
     QColor, QFont, QAction, QTextCharFormat, QTextCursor, QKeyEvent,
-    QTextListFormat, QTextBlockFormat, QTextFormat
+    QTextListFormat, QTextBlockFormat, QTextFormat, QDrag, QPainter
 )
+
 
 from core.database import Database, Project, ProjectSection
 from utils.i18n import trs
@@ -387,6 +388,8 @@ class ProjectColumn(QFrame):
         self._desired_height: int = 200
         self._collapsed: bool = bool(project.collapsed)
         self._sections_loaded: bool = False
+        self._drag_start_pos = None
+        self._drag_candidate = False
         self._setup_ui()
         self._load_sections()
         self._update_height()
@@ -466,7 +469,9 @@ class ProjectColumn(QFrame):
         btn_more.setMenu(menu)
         header_layout.addWidget(btn_more)
 
-        self.header.mousePressEvent = self._on_header_click
+        self.header.mousePressEvent = self._on_header_mouse_press
+        self.header.mouseMoveEvent = self._on_header_mouse_move
+        self.header.mouseReleaseEvent = self._on_header_mouse_release
         self.header.mouseDoubleClickEvent = self._on_header_double_click
 
         layout.addWidget(self.header)
@@ -532,13 +537,42 @@ class ProjectColumn(QFrame):
         self.db.delete_project_section(section_id)
         self._load_sections()
 
-    def _on_header_click(self, event):
+    def _on_header_mouse_press(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.globalPosition().toPoint()
+            self._drag_candidate = True
+
+    def _on_header_mouse_move(self, event):
+        if not self._drag_candidate or self._drag_start_pos is None:
+            return
+        if (event.globalPosition().toPoint() - self._drag_start_pos).manhattanLength() > 10:
+            self._drag_candidate = False
+            self._start_drag()
+
+    def _on_header_mouse_release(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_candidate:
+            self._drag_candidate = False
             self._toggle_collapse()
 
     def _on_header_double_click(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._start_rename()
+
+    def _start_drag(self):
+        mime = QMimeData()
+        mime.setText(str(self.project.id))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+
+        pixmap = self.grab()
+        painter = QPainter(pixmap)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 180))
+        painter.end()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(pixmap.rect().center())
+
+        drag.exec(Qt.DropAction.MoveAction)
 
     def _toggle_collapse(self):
         self._collapsed = not self._collapsed
@@ -680,6 +714,13 @@ class ProjectsWidget(QWidget):
         self.scroll.setWidget(self.columns_container)
         layout.addWidget(self.scroll)
 
+        # Drop indicator line shown during project drag reordering
+        self._drop_indicator = QFrame(self.columns_container)
+        self._drop_indicator.setStyleSheet("background-color: black;")
+        self._drop_indicator.setFixedSize(0, 0)
+        self._drop_indicator.hide()
+
+        self.setAcceptDrops(True)
         self._columns = []
 
         # Scroll position persistence timer (debounced)
@@ -754,6 +795,92 @@ class ProjectsWidget(QWidget):
         column_height = max(200, height - 24)
         for column in self._columns:
             column.set_expanded_height(column_height)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if not event.mimeData().hasText():
+            return
+        event.acceptProposedAction()
+        pos = self.columns_container.mapFrom(self, event.position().toPoint())
+        insert_idx = self._compute_insert_index(pos)
+        self._update_drop_indicator(insert_idx)
+
+    def dragLeaveEvent(self, event):
+        self._hide_drop_indicator()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasText():
+            return
+        try:
+            source_id = int(event.mimeData().text())
+        except ValueError:
+            return
+        pos = self.columns_container.mapFrom(self, event.position().toPoint())
+        self._reorder_project(source_id, pos)
+        self._hide_drop_indicator()
+        event.acceptProposedAction()
+
+    def _compute_insert_index(self, pos) -> int:
+        if not self._columns:
+            return 0
+        for i, col in enumerate(self._columns):
+            rect = col.geometry()
+            if pos.y() < rect.center().y():
+                return i
+            if pos.y() <= rect.bottom() and pos.x() < rect.center().x():
+                return i
+        return len(self._columns)
+
+    def _update_drop_indicator(self, insert_idx: int):
+        if not self._columns:
+            return
+        container_width = self.columns_container.width()
+        if insert_idx < len(self._columns):
+            target = self._columns[insert_idx]
+            rect = target.geometry()
+            col = insert_idx % self._view_mode
+            if col == 0:
+                # Horizontal line above the first card in a row
+                self._drop_indicator.setGeometry(0, rect.top() - 1, container_width, 2)
+            else:
+                # Vertical line to the left of a card in the middle/end of a row
+                self._drop_indicator.setGeometry(rect.left() - 1, rect.top(), 2, rect.height())
+        else:
+            last = self._columns[-1]
+            rect = last.geometry()
+            last_col = (len(self._columns) - 1) % self._view_mode
+            if last_col == self._view_mode - 1:
+                # Horizontal line below the last card when the row is full
+                self._drop_indicator.setGeometry(0, rect.bottom() + 1, container_width, 2)
+            else:
+                # Vertical line to the right of the last card when the row is not full
+                self._drop_indicator.setGeometry(rect.right() + 1, rect.top(), 2, rect.height())
+        self._drop_indicator.raise_()
+        self._drop_indicator.show()
+
+    def _hide_drop_indicator(self):
+        self._drop_indicator.hide()
+
+    def _reorder_project(self, source_id: int, pos):
+        source_idx = next((i for i, c in enumerate(self._columns) if c.project.id == source_id), -1)
+        if source_idx == -1:
+            return
+        target_idx = self._compute_insert_index(pos)
+        if target_idx > source_idx:
+            target_idx -= 1
+        if target_idx == source_idx:
+            return
+
+        column = self._columns.pop(source_idx)
+        self._columns.insert(target_idx, column)
+
+        for i, col in enumerate(self._columns):
+            self.db.update_project(col.project.id, sort_order=i)
+
+        self._relayout_projects()
 
     def _load_projects(self):
         self.setUpdatesEnabled(False)
