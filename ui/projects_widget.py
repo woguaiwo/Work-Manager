@@ -708,7 +708,7 @@ class ProjectsWidget(QWidget):
         self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         self.columns_container = QWidget(self.scroll)
-        self.columns_layout = QGridLayout(self.columns_container)
+        self.columns_layout = QHBoxLayout(self.columns_container)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
         self.columns_layout.setSpacing(12)
         self.columns_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -775,23 +775,37 @@ class ProjectsWidget(QWidget):
     def _relayout_projects(self):
         self.setUpdatesEnabled(False)
         try:
-            # Detach all project columns from the grid
-            for i in range(self.columns_layout.count() - 1, -1, -1):
-                item = self.columns_layout.takeAt(i)
-                if item.widget():
-                    item.widget().setParent(None)
+            # Clean up existing column containers and detach project columns
+            while self.columns_layout.count():
+                item = self.columns_layout.takeAt(0)
+                col_widget = item.widget()
+                if not isinstance(col_widget, QWidget):
+                    continue
+                inner = col_widget.layout()
+                if inner is not None:
+                    while inner.count():
+                        inner_item = inner.takeAt(0)
+                        if inner_item.widget():
+                            inner_item.widget().setParent(None)
+                self.columns_layout.removeWidget(col_widget)
+                col_widget.deleteLater()
 
-            # Equal width for active columns, no stretch for unused ones
-            for c in range(3):
-                self.columns_layout.setColumnStretch(c, 1 if c < self._view_mode else 0)
+            # Create one vertical column per active view slot
+            column_layouts = []
+            for _ in range(self._view_mode):
+                container = QWidget(self.columns_container)
+                layout = QVBoxLayout(container)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(12)
+                layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+                container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                self.columns_layout.addWidget(container, 1)
+                column_layouts.append(layout)
 
-            # Row-major order: left-to-right, then top-to-bottom
+            # Distribute project columns row-major into independent vertical columns
             for idx, column in enumerate(self._columns):
-                row = idx // self._view_mode
                 col = idx % self._view_mode
-                self.columns_layout.addWidget(
-                    column, row, col, alignment=Qt.AlignmentFlag.AlignTop
-                )
+                column_layouts[col].addWidget(column, alignment=Qt.AlignmentFlag.AlignTop)
         finally:
             self.setUpdatesEnabled(True)
         self._refresh_column_heights()
