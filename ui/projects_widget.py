@@ -137,11 +137,13 @@ class SectionWidget(QFrame):
         self.toolbar.setSpacing(4)
         self.toolbar.setContentsMargins(4, 4, 4, 0)
 
-        self._make_tool_btn(trs("fmt_bold"), self._toggle_bold, "font-weight: bold;")
-        self._make_tool_btn(trs("fmt_italic"), self._toggle_italic, "font-style: italic;")
-        self._make_tool_btn(trs("fmt_color"), self._set_text_color, "")
-        self._make_tool_btn(trs("fmt_highlight"), self._set_highlight_color, "")
-        self._make_tool_btn(trs("fmt_list"), self._toggle_bullet_list, "")
+        self._tool_buttons = [
+            self._make_tool_btn(trs("fmt_bold"), self._toggle_bold, "font-weight: bold;"),
+            self._make_tool_btn(trs("fmt_italic"), self._toggle_italic, "font-style: italic;"),
+            self._make_tool_btn(trs("fmt_color"), self._set_text_color, ""),
+            self._make_tool_btn(trs("fmt_highlight"), self._set_highlight_color, ""),
+            self._make_tool_btn(trs("fmt_list"), self._toggle_bullet_list, ""),
+        ]
 
         toolbar_widget = QWidget(self)
         toolbar_widget.setLayout(self.toolbar)
@@ -169,6 +171,15 @@ class SectionWidget(QFrame):
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._flush_save)
+
+    def _retranslate_ui(self):
+        self.lbl_name.setText(self._name)
+        labels = [
+            trs("fmt_bold"), trs("fmt_italic"), trs("fmt_color"),
+            trs("fmt_highlight"), trs("fmt_list"),
+        ]
+        for btn, label in zip(self._tool_buttons, labels):
+            btn.setText(label)
 
     def _on_content_changed(self):
         self._pending_content = self.editor.toHtml()
@@ -210,6 +221,7 @@ class SectionWidget(QFrame):
         btn.setFixedHeight(24)
         btn.clicked.connect(callback)
         self.toolbar.addWidget(btn)
+        return btn
 
     def _is_selection_bold(self) -> bool:
         cursor = self.editor.textCursor()
@@ -408,8 +420,8 @@ class ProjectColumn(QFrame):
         header_layout.addWidget(self.lbl_name)
         header_layout.addStretch()
 
-        btn_add = QPushButton("+ " + trs("new_section"), self)
-        btn_add.setStyleSheet("""
+        self.btn_add_section = QPushButton("+ " + trs("new_section"), self)
+        self.btn_add_section.setStyleSheet("""
             QPushButton {
                 background-color: #e3f2fd;
                 color: #1565c0;
@@ -419,9 +431,9 @@ class ProjectColumn(QFrame):
             }
             QPushButton:hover { background-color: #bbdefb; }
         """)
-        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_add.clicked.connect(self._add_section)
-        header_layout.addWidget(btn_add)
+        self.btn_add_section.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add_section.clicked.connect(self._add_section)
+        header_layout.addWidget(self.btn_add_section)
 
         btn_more = QToolButton(self)
         btn_more.setText("⋮")
@@ -441,16 +453,16 @@ class ProjectColumn(QFrame):
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
             QMenu::item:selected { background-color: #e3f2fd; color: #1565c0; }
         """)
-        action_rename = QAction(trs("rename_project"), self)
-        action_rename.triggered.connect(self._rename_project)
-        menu.addAction(action_rename)
-        action_color = QAction(trs("change_color"), self)
-        action_color.triggered.connect(self._change_color)
-        menu.addAction(action_color)
+        self.action_rename = QAction(trs("rename_project"), self)
+        self.action_rename.triggered.connect(self._rename_project)
+        menu.addAction(self.action_rename)
+        self.action_color = QAction(trs("change_color"), self)
+        self.action_color.triggered.connect(self._change_color)
+        menu.addAction(self.action_color)
         menu.addSeparator()
-        action_delete = QAction(trs("delete_project"), self)
-        action_delete.triggered.connect(self._delete_project)
-        menu.addAction(action_delete)
+        self.action_delete = QAction(trs("delete_project"), self)
+        self.action_delete.triggered.connect(self._delete_project)
+        menu.addAction(self.action_delete)
         btn_more.setMenu(menu)
         header_layout.addWidget(btn_more)
 
@@ -475,6 +487,16 @@ class ProjectColumn(QFrame):
 
         self.scroll.setWidget(self.sections_container)
         layout.addWidget(self.scroll)
+
+    def _retranslate_ui(self):
+        self.btn_add_section.setText("+ " + trs("new_section"))
+        self.action_rename.setText(trs("rename_project"))
+        self.action_color.setText(trs("change_color"))
+        self.action_delete.setText(trs("delete_project"))
+        for i in range(self.sections_layout.count()):
+            widget = self.sections_layout.itemAt(i).widget()
+            if isinstance(widget, SectionWidget):
+                widget._retranslate_ui()
 
     def _load_sections(self):
         if self._sections_loaded:
@@ -608,8 +630,8 @@ class ProjectsWidget(QWidget):
         toolbar.addWidget(self.lbl_title)
         toolbar.addStretch()
 
-        btn_add = QPushButton("+ " + trs("new_project"), self)
-        btn_add.setStyleSheet("""
+        self.btn_add_project = QPushButton("+ " + trs("new_project"), self)
+        self.btn_add_project.setStyleSheet("""
             QPushButton {
                 background-color: #5B8DB8;
                 color: white;
@@ -620,9 +642,9 @@ class ProjectsWidget(QWidget):
             }
             QPushButton:hover { background-color: #4a7aa5; }
         """)
-        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_add.clicked.connect(self._add_project)
-        toolbar.addWidget(btn_add)
+        self.btn_add_project.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add_project.clicked.connect(self._add_project)
+        toolbar.addWidget(self.btn_add_project)
 
         self.cmb_view = QComboBox(self)
         self.cmb_view.addItem(trs("view_1"), 1)
@@ -673,6 +695,15 @@ class ProjectsWidget(QWidget):
         except ValueError:
             self._view_mode = 1
         self.cmb_view.setCurrentIndex(self._view_mode - 1)
+
+    def _retranslate_ui(self):
+        self.lbl_title.setText(trs("projects"))
+        self.btn_add_project.setText("+ " + trs("new_project"))
+        self.cmb_view.setItemText(0, trs("view_1"))
+        self.cmb_view.setItemText(1, trs("view_2"))
+        self.cmb_view.setItemText(2, trs("view_3"))
+        for column in self._columns:
+            column._retranslate_ui()
 
     def _on_view_changed(self):
         self._view_mode = self.cmb_view.currentData()

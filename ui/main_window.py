@@ -467,6 +467,8 @@ class MainWindow(QMainWindow):
             self.dashboard._retranslate_ui()
         if hasattr(self, 'calendar_widget'):
             self.calendar_widget._retranslate_ui()
+        if hasattr(self, 'projects_widget'):
+            self.projects_widget._retranslate_ui()
         if hasattr(self, 'indicator'):
             self.indicator._retranslate_ui()
 
