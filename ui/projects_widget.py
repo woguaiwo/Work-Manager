@@ -844,6 +844,7 @@ class ProjectsWidget(QWidget):
         if not self._columns:
             return
         container_width = self.columns_container.width()
+        container_height = self.columns_container.height()
         gap = 6  # place line in the middle of the 12px spacing
         thickness = 3
         if insert_idx < len(self._columns):
@@ -852,20 +853,24 @@ class ProjectsWidget(QWidget):
             col = insert_idx % self._view_mode
             if col == 0:
                 # Horizontal line above the first card in a row
-                self._drop_indicator.setGeometry(0, rect.top() - gap, container_width, thickness)
+                y = max(0, rect.top() - gap)
+                self._drop_indicator.setGeometry(0, y, container_width, thickness)
             else:
                 # Vertical line to the left of a card in the middle/end of a row
-                self._drop_indicator.setGeometry(rect.left() - gap, rect.top(), thickness, rect.height())
+                x = max(0, rect.left() - gap)
+                self._drop_indicator.setGeometry(x, rect.top(), thickness, rect.height())
         else:
             last = self._columns[-1]
             rect = last.geometry()
             last_col = (len(self._columns) - 1) % self._view_mode
             if last_col == self._view_mode - 1:
                 # Horizontal line below the last card when the row is full
-                self._drop_indicator.setGeometry(0, rect.bottom() + gap, container_width, thickness)
+                y = min(container_height - thickness, rect.bottom() + gap)
+                self._drop_indicator.setGeometry(0, y, container_width, thickness)
             else:
                 # Vertical line to the right of the last card when the row is not full
-                self._drop_indicator.setGeometry(rect.right() + gap, rect.top(), thickness, rect.height())
+                x = min(container_width - thickness, rect.right() + gap)
+                self._drop_indicator.setGeometry(x, rect.top(), thickness, rect.height())
         self._drop_indicator.raise_()
         self._drop_indicator.show()
 
