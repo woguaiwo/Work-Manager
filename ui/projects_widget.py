@@ -389,6 +389,7 @@ class ProjectColumn(QFrame):
         self._collapsed: bool = bool(project.collapsed)
         self._sections_loaded: bool = False
         self._drag_start_pos = None
+        self._drag_local_pos = None
         self._drag_candidate = False
         self._setup_ui()
         self._load_sections()
@@ -540,6 +541,7 @@ class ProjectColumn(QFrame):
     def _on_header_mouse_press(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.globalPosition().toPoint()
+            self._drag_local_pos = self.mapFromGlobal(event.globalPosition().toPoint())
             self._drag_candidate = True
 
     def _on_header_mouse_move(self, event):
@@ -570,7 +572,7 @@ class ProjectColumn(QFrame):
         painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 180))
         painter.end()
         drag.setPixmap(pixmap)
-        drag.setHotSpot(pixmap.rect().center())
+        drag.setHotSpot(self._drag_local_pos if self._drag_local_pos else pixmap.rect().center())
 
         drag.exec(Qt.DropAction.MoveAction)
 
@@ -716,8 +718,12 @@ class ProjectsWidget(QWidget):
 
         # Drop indicator line shown during project drag reordering
         self._drop_indicator = QFrame(self.columns_container)
-        self._drop_indicator.setStyleSheet("background-color: black;")
-        self._drop_indicator.setFixedSize(0, 0)
+        self._drop_indicator.setStyleSheet("""
+            QFrame {
+                background-color: #212121;
+                border-radius: 1px;
+            }
+        """)
         self._drop_indicator.hide()
 
         self.setAcceptDrops(True)
@@ -838,26 +844,28 @@ class ProjectsWidget(QWidget):
         if not self._columns:
             return
         container_width = self.columns_container.width()
+        gap = 6  # place line in the middle of the 12px spacing
+        thickness = 3
         if insert_idx < len(self._columns):
             target = self._columns[insert_idx]
             rect = target.geometry()
             col = insert_idx % self._view_mode
             if col == 0:
                 # Horizontal line above the first card in a row
-                self._drop_indicator.setGeometry(0, rect.top() - 1, container_width, 2)
+                self._drop_indicator.setGeometry(0, rect.top() - gap, container_width, thickness)
             else:
                 # Vertical line to the left of a card in the middle/end of a row
-                self._drop_indicator.setGeometry(rect.left() - 1, rect.top(), 2, rect.height())
+                self._drop_indicator.setGeometry(rect.left() - gap, rect.top(), thickness, rect.height())
         else:
             last = self._columns[-1]
             rect = last.geometry()
             last_col = (len(self._columns) - 1) % self._view_mode
             if last_col == self._view_mode - 1:
                 # Horizontal line below the last card when the row is full
-                self._drop_indicator.setGeometry(0, rect.bottom() + 1, container_width, 2)
+                self._drop_indicator.setGeometry(0, rect.bottom() + gap, container_width, thickness)
             else:
                 # Vertical line to the right of the last card when the row is not full
-                self._drop_indicator.setGeometry(rect.right() + 1, rect.top(), 2, rect.height())
+                self._drop_indicator.setGeometry(rect.right() + gap, rect.top(), thickness, rect.height())
         self._drop_indicator.raise_()
         self._drop_indicator.show()
 
