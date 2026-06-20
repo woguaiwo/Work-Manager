@@ -9,12 +9,13 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QTextEdit, QLineEdit, QComboBox,
     QSizePolicy, QApplication, QMessageBox, QToolButton, QMenu,
-    QColorDialog, QInputDialog
+    QColorDialog, QInputDialog, QWidgetAction
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent, QMimeData
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent, QMimeData, QPoint
 from PyQt6.QtGui import (
     QColor, QFont, QAction, QTextCharFormat, QTextCursor, QKeyEvent,
-    QTextListFormat, QTextBlockFormat, QTextFormat, QDrag, QPainter
+    QTextListFormat, QTextBlockFormat, QTextFormat, QDrag, QPainter,
+    QCursor, QMouseEvent
 )
 
 
@@ -33,6 +34,16 @@ SECTION_PALETTE = [
 PROJECT_PALETTE = [
     "#5B8DB8", "#7E57C2", "#43A047", "#FB8C00",
     "#E53935", "#00897B", "#3949AB", "#D81B60",
+]
+
+DEFAULT_TEXT_COLORS = [
+    "#000000", "#E53935", "#43A047", "#1565C0",
+    "#FB8C00", "#7E57C2", "#D81B60", "#00897B",
+]
+
+DEFAULT_HIGHLIGHT_COLORS = [
+    "#FFEB3B", "#A5D6A7", "#90CAF9", "#FFCC80",
+    "#EF9A9A", "#CE93D8", "#FFF59D", "#B0BEC5",
 ]
 
 
@@ -56,11 +67,124 @@ class NoteEditor(QTextEdit):
         """)
         self.textChanged.connect(self.content_changed.emit)
 
+        # Folding state for lines starting with "> "
+        self._fold_states: dict[int, bool] = {}
+        self._fold_timer = QTimer(self)
+        self._fold_timer.setSingleShot(True)
+        self._fold_timer.timeout.connect(self._update_folding)
+        self.textChanged.connect(self._schedule_fold_update)
+
+    def _schedule_fold_update(self):
+        self._fold_timer.stop()
+        self._fold_timer.start(400)
+
+    def _update_folding(self):
+        doc = self.document()
+        if doc is None:
+            return
+
+        # Preserve existing fold states keyed by block position
+        old_states = dict(self._fold_states)
+        self._fold_states.clear()
+
+        i = 0
+        while i < doc.blockCount():
+            block = doc.findBlockByNumber(i)
+            stripped = block.text().lstrip()
+            is_header = stripped.startswith("> ")
+            if is_header:
+                pos = block.position()
+                # Default new headers to collapsed; preserve state if position still exists
+                collapsed = old_states.get(pos, True)
+                self._fold_states[pos] = collapsed
+
+                header_indent = len(block.text()) - len(stripped)
+                j = i + 1
+                while j < doc.blockCount():
+                    child = doc.findBlockByNumber(j)
+                    child_stripped = child.text().lstrip()
+                    if child_stripped:
+                        child_indent = len(child.text()) - len(child_stripped)
+                        if child_indent <= header_indent:
+                            break
+                    j += 1
+
+                for k in range(i + 1, j):
+                    doc.findBlockByNumber(k).setVisible(not collapsed)
+                i = j
+            else:
+                block.setVisible(True)
+                i += 1
+
+        self.viewport().update()
+
+    def _toggle_fold(self, block_pos: int):
+        if block_pos in self._fold_states:
+            self._fold_states[block_pos] = not self._fold_states[block_pos]
+        else:
+            self._fold_states[block_pos] = False
+        self._update_folding()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton and event.position().x() <= 20:
+            cursor = self.cursorForPosition(event.position().toPoint())
+            block = cursor.block()
+            if block.text().lstrip().startswith("> "):
+                self._toggle_fold(block.position())
+                return
+        super().mousePressEvent(event)
+
     def keyPressEvent(self, event: QKeyEvent):
-        if event.key() == Qt.Key.Key_Tab and event.modifiers() == Qt.KeyboardModifier.NoModifier:
-            self.insertPlainText("        ")
+        if event.key() == Qt.Key.Key_Tab:
+            cursor = self.textCursor()
+            if cursor.hasSelection():
+                increase = not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                self._indent_selection(increase)
+            elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+Tab without selection: outdent current line
+                self._indent_selection(False)
+            else:
+                self.insertPlainText("    ")
             return
         super().keyPressEvent(event)
+
+    def _indent_selection(self, increase: bool):
+        cursor = self.textCursor()
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        doc = self.document()
+        start_block = doc.findBlock(start)
+        end_block = doc.findBlock(end)
+        if end < end_block.position() and end_block != start_block:
+            end_block = end_block.previous()
+
+        cursor.beginEditBlock()
+        try:
+            block = start_block
+            while block.isValid() and block.blockNumber() <= end_block.blockNumber():
+                if increase:
+                    indent_cursor = QTextCursor(block)
+                    indent_cursor.setPosition(block.position())
+                    indent_cursor.insertText("    ")
+                else:
+                    text = block.text()
+                    indent_len = 0
+                    for char in text:
+                        if char == ' ' and indent_len < 4:
+                            indent_len += 1
+                        elif char == '\t':
+                            indent_len = 4
+                            break
+                        else:
+                            break
+                    if indent_len > 0:
+                        remove_cursor = QTextCursor(block)
+                        remove_cursor.setPosition(block.position())
+                        remove_cursor.setPosition(block.position() + indent_len, QTextCursor.MoveMode.KeepAnchor)
+                        remove_cursor.removeSelectedText()
+                block = block.next()
+        finally:
+            cursor.endEditBlock()
 
 
 class SectionWidget(QFrame):
@@ -75,10 +199,14 @@ class SectionWidget(QFrame):
         super().__init__(parent)
         self.db = db
         self.section_id = section.id
+        self.project_id = section.project_id
         self._collapsed = bool(section.collapsed)
         self._color = section.color or SECTION_PALETTE[0]
         self._name = section.name or trs("new_section")
         self._pending_content: Optional[str] = None
+        self._drag_start_pos = None
+        self._drag_local_pos = None
+        self._drag_candidate = False
         self._setup_ui()
         self._load_note()
 
@@ -110,7 +238,6 @@ class SectionWidget(QFrame):
         self.lbl_name.setStyleSheet("font-size: 12px; font-weight: bold; color: #37474f;")
         self.lbl_name.setWordWrap(False)
         self.lbl_name.setCursor(Qt.CursorShape.IBeamCursor)
-        self.lbl_name.mousePressEvent = self._on_name_click
         header_layout.addWidget(self.lbl_name)
         header_layout.addStretch()
 
@@ -129,7 +256,10 @@ class SectionWidget(QFrame):
         self.btn_delete.clicked.connect(self._request_delete)
         header_layout.addWidget(self.btn_delete)
 
-        self.header.mousePressEvent = self._on_header_click
+        self.header.setMouseTracking(True)
+        self.lbl_name.setMouseTracking(True)
+        self.header.installEventFilter(self)
+        self.lbl_name.installEventFilter(self)
 
         layout.addWidget(self.header)
 
@@ -250,18 +380,79 @@ class SectionWidget(QFrame):
         self.editor.mergeCurrentCharFormat(fmt)
 
     def _set_text_color(self):
-        color = QColorDialog.getColor(Qt.GlobalColor.black, self)
-        if color.isValid():
-            fmt = QTextCharFormat()
-            fmt.setForeground(color)
-            self.editor.mergeCurrentCharFormat(fmt)
+        self._show_color_menu(is_highlight=False)
 
     def _set_highlight_color(self):
-        color = QColorDialog.getColor(QColor("#FFEB3B"), self)
-        if color.isValid():
-            fmt = QTextCharFormat()
+        self._show_color_menu(is_highlight=True)
+
+    def _show_color_menu(self, is_highlight: bool):
+        btn = self.sender()
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 4px; }
+        """)
+
+        key = 'recent_highlight_colors' if is_highlight else 'recent_text_colors'
+        default_colors = DEFAULT_HIGHLIGHT_COLORS if is_highlight else DEFAULT_TEXT_COLORS
+        recent_colors = self.db.get_recent_colors(key)
+
+        def _color_grid(colors):
+            widget = QWidget()
+            grid = QGridLayout(widget)
+            grid.setSpacing(4)
+            grid.setContentsMargins(4, 4, 4, 4)
+            for i, color in enumerate(colors):
+                cb = QPushButton()
+                cb.setFixedSize(22, 22)
+                cb.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {color};
+                        border: 1px solid #e0e0e0;
+                        border-radius: 3px;
+                    }}
+                    QPushButton:hover {{ border: 1px solid #5B8DB8; }}
+                """)
+                cb.setCursor(Qt.CursorShape.PointingHandCursor)
+                cb.clicked.connect(lambda checked, c=color: self._apply_color(c, is_highlight))
+                grid.addWidget(cb, i // 4, i % 4)
+            return widget
+
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(_color_grid(default_colors))
+        menu.addAction(action)
+
+        if recent_colors:
+            menu.addSeparator()
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(_color_grid(recent_colors))
+            menu.addAction(action)
+
+        menu.addSeparator()
+        more_action = QAction(trs("more_colors"), menu)
+        more_action.triggered.connect(lambda: self._pick_custom_color(is_highlight))
+        menu.addAction(more_action)
+
+        if btn:
+            menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
+        else:
+            menu.exec(QCursor.pos())
+
+    def _apply_color(self, color_name: str, is_highlight: bool):
+        color = QColor(color_name)
+        fmt = QTextCharFormat()
+        if is_highlight:
             fmt.setBackground(color)
-            self.editor.mergeCurrentCharFormat(fmt)
+        else:
+            fmt.setForeground(color)
+        self.editor.mergeCurrentCharFormat(fmt)
+        key = 'recent_highlight_colors' if is_highlight else 'recent_text_colors'
+        self.db.add_recent_color(key, color_name)
+
+    def _pick_custom_color(self, is_highlight: bool):
+        default = QColor("#FFEB3B") if is_highlight else Qt.GlobalColor.black
+        color = QColorDialog.getColor(default, self)
+        if color.isValid():
+            self._apply_color(color.name(), is_highlight)
 
     def _toggle_bullet_list(self):
         cursor = self.editor.textCursor()
@@ -279,13 +470,48 @@ class SectionWidget(QFrame):
         if note and note.content:
             self.editor.setHtml(note.content)
 
-    def _on_header_click(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._toggle()
+    def eventFilter(self, obj, event):
+        if obj in (self.header, self.lbl_name) and event.type() in (
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonRelease,
+        ):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._drag_start_pos = event.globalPosition().toPoint()
+                    self._drag_local_pos = self.mapFromGlobal(event.globalPosition().toPoint())
+                    self._drag_candidate = True
+            elif event.type() == QEvent.Type.MouseMove:
+                if self._drag_candidate and self._drag_start_pos is not None:
+                    if (event.globalPosition().toPoint() - self._drag_start_pos).manhattanLength() > 10:
+                        self._drag_candidate = False
+                        self._start_drag()
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.MouseButton.LeftButton and self._drag_candidate:
+                    self._drag_candidate = False
+                    label_pos = self.lbl_name.mapFromGlobal(event.globalPosition().toPoint())
+                    if self.lbl_name.rect().contains(label_pos):
+                        self._start_rename()
+                    else:
+                        self._toggle()
+            return True
+        return super().eventFilter(obj, event)
 
-    def _on_name_click(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._start_rename()
+    def _start_drag(self):
+        mime = QMimeData()
+        mime.setText(f"{self.section_id}:{self.project_id}")
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+
+        pixmap = self.grab()
+        painter = QPainter(pixmap)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 180))
+        painter.end()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(self._drag_local_pos if self._drag_local_pos else pixmap.rect().center())
+
+        drag.exec(Qt.DropAction.MoveAction)
 
     def _toggle(self):
         self._flush_save()
@@ -494,6 +720,16 @@ class ProjectColumn(QFrame):
         self.scroll.setWidget(self.sections_container)
         layout.addWidget(self.scroll)
 
+        # Drop indicator for reordering sections inside this project
+        self._section_drop_indicator = QFrame(self.sections_container)
+        self._section_drop_indicator.setStyleSheet("""
+            QFrame { background-color: #212121; border-radius: 1px; }
+        """)
+        self._section_drop_indicator.hide()
+
+        self.sections_container.setAcceptDrops(True)
+        self.sections_container.installEventFilter(self)
+
     def _retranslate_ui(self):
         self.btn_add_section.setText("+ " + trs("new_section"))
         self.action_rename.setText(trs("rename_project"))
@@ -503,6 +739,108 @@ class ProjectColumn(QFrame):
             widget = self.sections_layout.itemAt(i).widget()
             if isinstance(widget, SectionWidget):
                 widget._retranslate_ui()
+
+    def eventFilter(self, obj, event):
+        if obj is self.sections_container:
+            et = event.type()
+            if et == QEvent.Type.DragEnter:
+                if event.mimeData().hasText():
+                    payload = event.mimeData().text()
+                    if ":" in payload:
+                        _, project_id = payload.split(":", 1)
+                        if int(project_id) == self.project.id:
+                            event.acceptProposedAction()
+            elif et == QEvent.Type.DragMove:
+                if event.mimeData().hasText():
+                    event.acceptProposedAction()
+                    pos = self.sections_container.mapFromGlobal(event.globalPosition().toPoint())
+                    insert_idx = self._compute_section_insert_index(pos)
+                    self._update_section_drop_indicator(insert_idx)
+            elif et == QEvent.Type.DragLeave:
+                self._hide_section_drop_indicator()
+            elif et == QEvent.Type.Drop:
+                if not event.mimeData().hasText():
+                    return True
+                payload = event.mimeData().text()
+                if ":" not in payload:
+                    return True
+                section_id_str, project_id_str = payload.split(":", 1)
+                if int(project_id_str) != self.project.id:
+                    return True
+                pos = self.sections_container.mapFromGlobal(event.globalPosition().toPoint())
+                self._reorder_section(int(section_id_str), pos)
+                self._hide_section_drop_indicator()
+                event.acceptProposedAction()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _compute_section_insert_index(self, pos) -> int:
+        for i in range(self.sections_layout.count()):
+            widget = self.sections_layout.itemAt(i).widget()
+            if widget is None:
+                continue
+            if pos.y() < widget.geometry().center().y():
+                return i
+        return self.sections_layout.count()
+
+    def _update_section_drop_indicator(self, insert_idx: int):
+        width = self.sections_container.width()
+        gap = 3
+        thickness = 3
+        if insert_idx < self.sections_layout.count():
+            widget = self.sections_layout.itemAt(insert_idx).widget()
+            if widget is None:
+                return
+            rect = widget.geometry()
+            y = max(0, rect.top() - gap)
+            self._section_drop_indicator.setGeometry(0, y, width, thickness)
+        else:
+            last = self.sections_layout.itemAt(self.sections_layout.count() - 1).widget()
+            if last is None:
+                return
+            rect = last.geometry()
+            y = min(self.sections_container.height() - thickness, rect.bottom() + gap)
+            self._section_drop_indicator.setGeometry(0, y, width, thickness)
+        self._section_drop_indicator.raise_()
+        self._section_drop_indicator.show()
+
+    def _hide_section_drop_indicator(self):
+        self._section_drop_indicator.hide()
+
+    def _reorder_section(self, source_section_id: int, pos):
+        source_idx = -1
+        for i in range(self.sections_layout.count()):
+            widget = self.sections_layout.itemAt(i).widget()
+            if isinstance(widget, SectionWidget) and widget.section_id == source_section_id:
+                source_idx = i
+                break
+        if source_idx == -1:
+            return
+        target_idx = self._compute_section_insert_index(pos)
+        if target_idx > source_idx:
+            target_idx -= 1
+        if target_idx == source_idx:
+            return
+
+        sections = []
+        for i in range(self.sections_layout.count()):
+            widget = self.sections_layout.itemAt(i).widget()
+            if isinstance(widget, SectionWidget):
+                sections.append(widget)
+
+        section = sections.pop(source_idx)
+        sections.insert(target_idx, section)
+
+        while self.sections_layout.count():
+            item = self.sections_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+
+        for s in sections:
+            self.sections_layout.addWidget(s)
+
+        for i, s in enumerate(sections):
+            self.db.update_project_section(s.section_id, sort_order=i)
 
     def _load_sections(self):
         if self._sections_loaded:

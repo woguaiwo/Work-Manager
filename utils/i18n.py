@@ -88,6 +88,7 @@ class _I18nManager(QObject):
                 "fmt_color": "颜色",
                 "fmt_highlight": "高亮",
                 "fmt_list": "列表",
+                "more_colors": "更多颜色",
                 # --- timeline_container ---
                 "prev_day": "前一天",
                 "today_btn": "今天",
@@ -255,6 +256,7 @@ class _I18nManager(QObject):
                 "fmt_color": "Color",
                 "fmt_highlight": "Highlight",
                 "fmt_list": "List",
+                "more_colors": "More Colors",
                 # --- timeline_container ---
                 "prev_day": "Previous Day",
                 "today_btn": "Today",

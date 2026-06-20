@@ -620,6 +620,19 @@ class Database:
         ''', (section_id, content, now, content, now))
         self.conn.commit()
 
+    def get_recent_colors(self, key: str, max_count: int = 8) -> List[str]:
+        raw = self.get_setting(key, '')
+        if not raw:
+            return []
+        return [c.strip() for c in raw.split(',') if c.strip()][:max_count]
+
+    def add_recent_color(self, key: str, color: str, max_count: int = 8):
+        colors = self.get_recent_colors(key, max_count)
+        if color in colors:
+            colors.remove(color)
+        colors.insert(0, color)
+        self.set_setting(key, ','.join(colors[:max_count]))
+
     def get_segments_by_date(self, date_str: str) -> List[ActivitySegment]:
         cursor = self.conn.cursor()
         cursor.execute('''
