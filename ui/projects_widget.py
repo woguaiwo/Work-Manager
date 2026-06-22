@@ -67,82 +67,140 @@ class NoteEditor(QTextEdit):
         """)
         self.textChanged.connect(self.content_changed.emit)
 
-        # Folding state for lines starting with "> "
-        self._fold_states: dict[int, bool] = {}
+        # Folding: "> " headers are shown as "▶ " (collapsed) / "▼ " (expanded)
         self._fold_timer = QTimer(self)
         self._fold_timer.setSingleShot(True)
         self._fold_timer.timeout.connect(self._update_folding)
         self.textChanged.connect(self._schedule_fold_update)
+        self._updating_folding = False
+        self._is_undoing = False
 
     def _schedule_fold_update(self):
+        if self._updating_folding or self._is_undoing:
+            return
         self._fold_timer.stop()
         self._fold_timer.start(400)
 
-    def _update_folding(self):
+    def _set_header_icon(self, block, icon: str):
+        """Replace the first two characters of a header line ("> ", "▶ " or "▽ ")
+        with `icon + " "`, keeping the rest of the line intact, and make the
+        icon bold so it stands out. The whole change is wrapped in a single
+        undo command so Ctrl+Z restores the original "> ".
+        """
+        text = block.text()
+        stripped = text.lstrip()
+        indent = len(text) - len(stripped)
+        cursor = QTextCursor(block)
+        cursor.beginEditBlock()
+        try:
+            cursor.setPosition(block.position() + indent)
+            cursor.setPosition(block.position() + indent + 2, QTextCursor.MoveMode.KeepAnchor)
+            cursor.insertText(icon + " ")
+            cursor.setPosition(block.position() + indent)
+            cursor.setPosition(block.position() + indent + 1, QTextCursor.MoveMode.KeepAnchor)
+            fmt = QTextCharFormat()
+            fmt.setFontWeight(QFont.Weight.Bold)
+            cursor.mergeCharFormat(fmt)
+        finally:
+            cursor.endEditBlock()
+
+    def _update_folding(self, is_undo: bool = False):
+        if self._updating_folding:
+            return
         doc = self.document()
         if doc is None:
             return
 
-        # Preserve existing fold states keyed by block position
-        old_states = dict(self._fold_states)
-        self._fold_states.clear()
+        self._updating_folding = True
+        try:
+            i = 0
+            while i < doc.blockCount():
+                block = doc.findBlockByNumber(i)
+                text = block.text()
+                stripped = text.lstrip()
+                indent = len(text) - len(stripped)
 
-        i = 0
-        while i < doc.blockCount():
-            block = doc.findBlockByNumber(i)
-            stripped = block.text().lstrip()
-            is_header = stripped.startswith("> ")
-            if is_header:
-                pos = block.position()
-                # Default new headers to collapsed; preserve state if position still exists
-                collapsed = old_states.get(pos, True)
-                self._fold_states[pos] = collapsed
+                # Auto-convert freshly typed "> " to collapsed icon unless this is an undo
+                if not is_undo and stripped.startswith("> "):
+                    self._set_header_icon(block, "▶")
+                    block = doc.findBlockByNumber(i)
+                    text = block.text()
+                    stripped = text.lstrip()
+                    indent = len(text) - len(stripped)
 
-                header_indent = len(block.text()) - len(stripped)
-                j = i + 1
-                while j < doc.blockCount():
-                    child = doc.findBlockByNumber(j)
-                    child_stripped = child.text().lstrip()
-                    if child_stripped:
-                        child_indent = len(child.text()) - len(child_stripped)
-                        if child_indent <= header_indent:
-                            break
-                    j += 1
+                if stripped.startswith("▶ ") or stripped.startswith("▽ "):
+                    collapsed = stripped.startswith("▶ ")
+                    j = i + 1
+                    while j < doc.blockCount():
+                        child = doc.findBlockByNumber(j)
+                        child_stripped = child.text().lstrip()
+                        if child_stripped:
+                            child_indent = len(child.text()) - len(child_stripped)
+                            if child_indent <= indent:
+                                break
+                        j += 1
 
-                for k in range(i + 1, j):
-                    doc.findBlockByNumber(k).setVisible(not collapsed)
-                i = j
-            else:
-                block.setVisible(True)
-                i += 1
+                    for k in range(i + 1, j):
+                        doc.findBlockByNumber(k).setVisible(not collapsed)
+                    i = j
+                else:
+                    block.setVisible(True)
+                    i += 1
 
-        self.viewport().update()
+            self.viewport().update()
+            # Force the document to recalculate layout after visibility changes
+            doc.markContentsDirty(0, doc.characterCount())
+            self.updateGeometry()
+        finally:
+            self._updating_folding = False
 
     def _toggle_fold(self, block_pos: int):
-        if block_pos in self._fold_states:
-            self._fold_states[block_pos] = not self._fold_states[block_pos]
+        doc = self.document()
+        block = doc.findBlock(block_pos)
+        text = block.text()
+        stripped = text.lstrip()
+        indent = len(text) - len(stripped)
+        if stripped.startswith("▶ "):
+            self._set_header_icon(block, "▽")
+        elif stripped.startswith("▽ "):
+            self._set_header_icon(block, "▶")
         else:
-            self._fold_states[block_pos] = False
+            return
+        self._fold_timer.stop()
         self._update_folding()
 
     def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton and event.position().x() <= 20:
+        if event.button() == Qt.MouseButton.LeftButton:
             cursor = self.cursorForPosition(event.position().toPoint())
             block = cursor.block()
-            if block.text().lstrip().startswith("> "):
+            text = block.text()
+            stripped = text.lstrip()
+            indent = len(text) - len(stripped)
+            if stripped.startswith(("▶ ", "▽ ", "> ")) and indent <= cursor.positionInBlock() <= indent + 2:
                 self._toggle_fold(block.position())
                 return
         super().mousePressEvent(event)
 
+    def undo(self):
+        self._fold_timer.stop()
+        self._is_undoing = True
+        try:
+            super().undo()
+            self._update_folding(is_undo=True)
+        finally:
+            self._is_undoing = False
+
+    def redo(self):
+        self._fold_timer.stop()
+        super().redo()
+        self._update_folding()
+
     def keyPressEvent(self, event: QKeyEvent):
-        if event.key() == Qt.Key.Key_Tab:
+        if event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            is_shift = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             cursor = self.textCursor()
-            if cursor.hasSelection():
-                increase = not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-                self._indent_selection(increase)
-            elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                # Shift+Tab without selection: outdent current line
-                self._indent_selection(False)
+            if cursor.hasSelection() or is_shift:
+                self._indent_selection(not is_shift)
             else:
                 self.insertPlainText("    ")
             return
@@ -155,8 +213,6 @@ class NoteEditor(QTextEdit):
         doc = self.document()
         start_block = doc.findBlock(start)
         end_block = doc.findBlock(end)
-        if end < end_block.position() and end_block != start_block:
-            end_block = end_block.previous()
 
         cursor.beginEditBlock()
         try:
@@ -285,6 +341,7 @@ class SectionWidget(QFrame):
         # Editor
         self.editor = NoteEditor(self)
         self.editor.setVisible(not self._collapsed)
+        self.editor.setAcceptDrops(False)
         self.editor.content_changed.connect(self._on_content_changed)
         self.editor.focusOutEvent = self._on_editor_focus_out
         layout.addWidget(self.editor)
@@ -718,6 +775,7 @@ class ProjectColumn(QFrame):
         # No stretch: sections expand to fill the project column height
 
         self.scroll.setWidget(self.sections_container)
+        self.sections_container.setAcceptDrops(True)
         layout.addWidget(self.scroll)
 
         # Drop indicator for reordering sections inside this project
@@ -741,7 +799,7 @@ class ProjectColumn(QFrame):
                 widget._retranslate_ui()
 
     def eventFilter(self, obj, event):
-        if obj is self.sections_container:
+        if obj is self.sections_container or self._is_descendant_of_sections_container(obj):
             et = event.type()
             if et == QEvent.Type.DragEnter:
                 if event.mimeData().hasText():
@@ -750,14 +808,17 @@ class ProjectColumn(QFrame):
                         _, project_id = payload.split(":", 1)
                         if int(project_id) == self.project.id:
                             event.acceptProposedAction()
+                            return True
             elif et == QEvent.Type.DragMove:
                 if event.mimeData().hasText():
                     event.acceptProposedAction()
-                    pos = self.sections_container.mapFromGlobal(event.globalPosition().toPoint())
+                    pos = self.sections_container.mapFrom(obj, event.position().toPoint())
                     insert_idx = self._compute_section_insert_index(pos)
                     self._update_section_drop_indicator(insert_idx)
+                    return True
             elif et == QEvent.Type.DragLeave:
                 self._hide_section_drop_indicator()
+                return True
             elif et == QEvent.Type.Drop:
                 if not event.mimeData().hasText():
                     return True
@@ -767,12 +828,20 @@ class ProjectColumn(QFrame):
                 section_id_str, project_id_str = payload.split(":", 1)
                 if int(project_id_str) != self.project.id:
                     return True
-                pos = self.sections_container.mapFromGlobal(event.globalPosition().toPoint())
+                pos = self.sections_container.mapFrom(obj, event.position().toPoint())
                 self._reorder_section(int(section_id_str), pos)
                 self._hide_section_drop_indicator()
                 event.acceptProposedAction()
                 return True
         return super().eventFilter(obj, event)
+
+    def _is_descendant_of_sections_container(self, widget):
+        parent = widget.parent()
+        while parent is not None:
+            if parent is self.sections_container:
+                return True
+            parent = parent.parent()
+        return False
 
     def _compute_section_insert_index(self, pos) -> int:
         for i in range(self.sections_layout.count()):
@@ -785,6 +854,8 @@ class ProjectColumn(QFrame):
 
     def _update_section_drop_indicator(self, insert_idx: int):
         width = self.sections_container.width()
+        if width <= 0:
+            width = self.scroll.viewport().width()
         gap = 3
         thickness = 3
         if insert_idx < self.sections_layout.count():
@@ -861,6 +932,12 @@ class ProjectColumn(QFrame):
         widget.renamed.connect(lambda sid, name: None)
         widget.deleted.connect(self._delete_section)
         self.sections_layout.addWidget(widget)
+        # Intercept drag events over the section and its children so that
+        # section reordering indicators work even when the cursor is above
+        # nested editors or toolbars.
+        widget.installEventFilter(self)
+        for child in widget.findChildren(QWidget):
+            child.installEventFilter(self)
 
     def _add_section(self):
         if not self._sections_loaded:
