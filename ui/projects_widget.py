@@ -141,7 +141,13 @@ class NoteEditor(QTextEdit):
                         j += 1
 
                     for k in range(i + 1, j):
-                        doc.findBlockByNumber(k).setVisible(not collapsed)
+                        child = doc.findBlockByNumber(k)
+                        # Blank lines inside a folded region stay visible so the
+                        # user can insert paragraph breaks after a header.
+                        if child.text().strip():
+                            child.setVisible(not collapsed)
+                        else:
+                            child.setVisible(True)
                     i = j
                 else:
                     block.setVisible(True)
