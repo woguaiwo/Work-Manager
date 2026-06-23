@@ -67,13 +67,33 @@ class NoteEditor(QTextEdit):
         """)
         self.textChanged.connect(self.content_changed.emit)
 
-        # Folding: "> " headers are shown as "▶ " (collapsed) / "▼ " (expanded)
+        # Folding: "> " headers are shown as "▶ " (collapsed) / "▽ " (expanded)
         self._fold_timer = QTimer(self)
         self._fold_timer.setSingleShot(True)
         self._fold_timer.timeout.connect(self._update_folding)
         self.textChanged.connect(self._schedule_fold_update)
         self._updating_folding = False
         self._is_undoing = False
+        # Sealed fold regions for collapsed headers: header position -> end position (exclusive)
+        self._fold_regions: dict[int, int] = {}
+        self.document().contentsChange.connect(self._on_contents_change)
+
+    def _on_contents_change(self, position: int, chars_removed: int, chars_added: int):
+        if self._updating_folding:
+            return
+        delta = chars_added - chars_removed
+        updated = {}
+        for header_pos, end_pos in self._fold_regions.items():
+            new_header_pos = header_pos
+            new_end_pos = end_pos
+            # Edits before a boundary shift the boundary; edits at the boundary
+            # itself stay outside the sealed region.
+            if position < header_pos:
+                new_header_pos += delta
+            if position < end_pos:
+                new_end_pos += delta
+            updated[new_header_pos] = new_end_pos
+        self._fold_regions = updated
 
     def _schedule_fold_update(self):
         if self._updating_folding or self._is_undoing:
@@ -113,59 +133,131 @@ class NoteEditor(QTextEdit):
 
         self._updating_folding = True
         try:
-            i = 0
-            while i < doc.blockCount():
-                block = doc.findBlockByNumber(i)
-                text = block.text()
-                stripped = text.lstrip()
-                indent = len(text) - len(stripped)
-
-                # Auto-convert freshly typed "> " to collapsed icon unless this is an undo
-                if not is_undo and stripped.startswith("> "):
-                    self._set_header_icon(block, "▶")
-                    block = doc.findBlockByNumber(i)
-                    text = block.text()
-                    stripped = text.lstrip()
-                    indent = len(text) - len(stripped)
-
-                if stripped.startswith("▶ ") or stripped.startswith("▽ "):
-                    collapsed = stripped.startswith("▶ ")
-                    j = i + 1
-                    while j < doc.blockCount():
-                        child = doc.findBlockByNumber(j)
-                        child_stripped = child.text().lstrip()
-                        if child_stripped:
-                            child_indent = len(child.text()) - len(child_stripped)
-                            if child_indent <= indent:
-                                break
-                        j += 1
-
-                    for k in range(i + 1, j):
-                        child = doc.findBlockByNumber(k)
-                        # Blank lines inside a folded region stay visible so the
-                        # user can insert paragraph breaks after a header.
-                        if child.text().strip():
-                            child.setVisible(not collapsed)
-                        else:
-                            child.setVisible(True)
-                    i = j
-                else:
-                    block.setVisible(True)
-                    i += 1
-
+            self._apply_folding(0, -1, False, is_undo)
             self.viewport().update()
             # Force the document to recalculate layout after visibility changes
             doc.markContentsDirty(0, doc.characterCount())
             self.updateGeometry()
+
+            # Remove stale fold regions whose header no longer exists
+            stale = []
+            for pos in self._fold_regions:
+                block = doc.findBlock(pos)
+                if block.position() != pos or not block.text().lstrip().startswith(("▶ ", "▽ ")):
+                    stale.append(pos)
+            for pos in stale:
+                del self._fold_regions[pos]
         finally:
             self._updating_folding = False
+
+    def _apply_folding(self, start_idx: int, parent_indent: int, parent_hidden: bool, is_undo: bool) -> int:
+        """Recursively apply folding starting at start_idx.
+
+        - parent_indent: indent level of the enclosing header (-1 for the root).
+        - parent_hidden: True if an ancestor header is collapsed.
+        - Returns the index of the first block that is outside this scope.
+        """
+        i = start_idx
+        while i < self.document().blockCount():
+            block = self.document().findBlockByNumber(i)
+            text = block.text()
+            stripped = text.lstrip()
+            indent = len(text) - len(stripped)
+
+            # A non-empty line at or before the parent's indent ends this scope.
+            if stripped and indent <= parent_indent:
+                return i
+
+            # Auto-convert freshly typed "> " to collapsed icon unless this is an undo.
+            if not is_undo and stripped.startswith("> "):
+                self._set_header_icon(block, "▶")
+                block = self.document().findBlockByNumber(i)
+                text = block.text()
+                stripped = text.lstrip()
+                indent = len(text) - len(stripped)
+
+            if stripped.startswith("▶ ") or stripped.startswith("▽ "):
+                collapsed = stripped.startswith("▶ ")
+                block.setVisible(not parent_hidden)
+                pos = block.position()
+
+                # Compute the current fold boundary based on indentation.
+                j = i + 1
+                while j < self.document().blockCount():
+                    child = self.document().findBlockByNumber(j)
+                    child_stripped = child.text().lstrip()
+                    if not child_stripped:
+                        break
+                    child_indent = len(child.text()) - len(child_stripped)
+                    if child_indent <= indent:
+                        break
+                    j += 1
+
+                current_end_pos = (self.document().findBlockByNumber(j).position()
+                                   if j < self.document().blockCount()
+                                   else self.document().characterCount())
+
+                # Collapsed headers keep a sealed fold region so edits made
+                # while collapsed do not get absorbed into the fold.
+                if collapsed:
+                    end_pos = self._fold_regions.get(pos, current_end_pos)
+                    if end_pos <= pos:
+                        end_pos = current_end_pos
+                    self._fold_regions[pos] = end_pos
+                else:
+                    end_pos = current_end_pos
+                    self._fold_regions[pos] = end_pos
+
+                if end_pos >= self.document().characterCount():
+                    end_idx = self.document().blockCount()
+                else:
+                    end_block = self.document().findBlock(end_pos)
+                    if not end_block.isValid():
+                        end_block = self.document().lastBlock()
+                    end_idx = end_block.blockNumber()
+                # Guard against stale end positions that fall inside the header itself.
+                if end_idx <= i:
+                    end_pos = current_end_pos
+                    end_block = self.document().findBlock(end_pos)
+                    end_idx = end_block.blockNumber()
+                    self._fold_regions[pos] = end_pos
+
+                # Leading blank lines immediately after a header are kept visible
+                # so pressing Enter on a collapsed header creates a usable blank
+                # line instead of a hidden one.
+                first_non_blank = i + 1
+                while first_non_blank < end_idx:
+                    if self.document().findBlockByNumber(first_non_blank).text().strip():
+                        break
+                    first_non_blank += 1
+
+                for k in range(i + 1, end_idx):
+                    child = self.document().findBlockByNumber(k)
+                    if k < first_non_blank:
+                        child.setVisible(not parent_hidden)
+                    else:
+                        child.setVisible(not parent_hidden and not collapsed)
+
+                # Recursively process nested headers inside this region.
+                # Leading blank lines are skipped; their visibility is handled
+                # above so pressing Enter on a collapsed header gives a visible
+                # blank line.
+                k = first_non_blank
+                while k < end_idx:
+                    k = self._apply_folding(k, indent, parent_hidden or collapsed, is_undo)
+
+                i = end_idx
+            else:
+                block.setVisible(not parent_hidden)
+                i += 1
+
+        return self.document().blockCount()
 
     def _toggle_fold(self, block_pos: int):
         doc = self.document()
         block = doc.findBlock(block_pos)
         text = block.text()
         stripped = text.lstrip()
-        indent = len(text) - len(stripped)
         if stripped.startswith("▶ "):
             self._set_header_icon(block, "▽")
         elif stripped.startswith("▽ "):
@@ -175,16 +267,27 @@ class NoteEditor(QTextEdit):
         self._fold_timer.stop()
         self._update_folding()
 
+    def _is_over_fold_icon(self, pos) -> bool:
+        cursor = self.cursorForPosition(pos)
+        block = cursor.block()
+        text = block.text()
+        stripped = text.lstrip()
+        indent = len(text) - len(stripped)
+        return (stripped.startswith(("▶ ", "▽ ", "> ")) and
+                indent <= cursor.positionInBlock() <= indent + 2)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if self._is_over_fold_icon(event.position().toPoint()):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(event)
+
     def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton and self._is_over_fold_icon(event.position().toPoint()):
             cursor = self.cursorForPosition(event.position().toPoint())
-            block = cursor.block()
-            text = block.text()
-            stripped = text.lstrip()
-            indent = len(text) - len(stripped)
-            if stripped.startswith(("▶ ", "▽ ", "> ")) and indent <= cursor.positionInBlock() <= indent + 2:
-                self._toggle_fold(block.position())
-                return
+            self._toggle_fold(cursor.block().position())
+            return
         super().mousePressEvent(event)
 
     def undo(self):
