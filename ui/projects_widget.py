@@ -74,6 +74,7 @@ class NoteEditor(QTextEdit):
         self.textChanged.connect(self._schedule_fold_update)
         self._updating_folding = False
         self._is_undoing = False
+        self.setMouseTracking(True)
         # Sealed fold regions for collapsed headers: header position -> end position (exclusive)
         self._fold_regions: dict[int, int] = {}
         self.document().contentsChange.connect(self._on_contents_change)
@@ -182,15 +183,16 @@ class NoteEditor(QTextEdit):
                 pos = block.position()
 
                 # Compute the current fold boundary based on indentation.
+                # Blank lines do not end the region so deeper indented content
+                # after a blank line is still folded with its parent header.
                 j = i + 1
                 while j < self.document().blockCount():
                     child = self.document().findBlockByNumber(j)
                     child_stripped = child.text().lstrip()
-                    if not child_stripped:
-                        break
-                    child_indent = len(child.text()) - len(child_stripped)
-                    if child_indent <= indent:
-                        break
+                    if child_stripped:
+                        child_indent = len(child.text()) - len(child_stripped)
+                        if child_indent <= indent:
+                            break
                     j += 1
 
                 current_end_pos = (self.document().findBlockByNumber(j).position()
@@ -222,33 +224,32 @@ class NoteEditor(QTextEdit):
                     end_idx = end_block.blockNumber()
                     self._fold_regions[pos] = end_pos
 
-                # Leading blank lines immediately after a header are kept visible
-                # so pressing Enter on a collapsed header creates a usable blank
-                # line instead of a hidden one.
-                first_non_blank = i + 1
-                while first_non_blank < end_idx:
-                    if self.document().findBlockByNumber(first_non_blank).text().strip():
-                        break
-                    first_non_blank += 1
-
                 for k in range(i + 1, end_idx):
                     child = self.document().findBlockByNumber(k)
-                    if k < first_non_blank:
-                        child.setVisible(not parent_hidden)
-                    else:
+                    # Blank lines inside a folded region stay visible so the
+                    # user can insert paragraph breaks after a header.
+                    if child.text().strip():
                         child.setVisible(not parent_hidden and not collapsed)
+                    else:
+                        child.setVisible(not parent_hidden)
 
                 # Recursively process nested headers inside this region.
-                # Leading blank lines are skipped; their visibility is handled
-                # above so pressing Enter on a collapsed header gives a visible
-                # blank line.
-                k = first_non_blank
+                # Blank lines are skipped so they keep the visible state set above.
+                k = i + 1
                 while k < end_idx:
+                    if not self.document().findBlockByNumber(k).text().strip():
+                        k += 1
+                        continue
                     k = self._apply_folding(k, indent, parent_hidden or collapsed, is_undo)
 
                 i = end_idx
             else:
-                block.setVisible(not parent_hidden)
+                # Blank lines are always kept visible so they can be used as
+                # paragraph breaks inside folded regions.
+                if block.text().strip():
+                    block.setVisible(not parent_hidden)
+                else:
+                    block.setVisible(True)
                 i += 1
 
         return self.document().blockCount()
@@ -278,9 +279,9 @@ class NoteEditor(QTextEdit):
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if self._is_over_fold_icon(event.position().toPoint()):
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
         else:
-            self.unsetCursor()
+            self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent):
