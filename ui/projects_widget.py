@@ -234,13 +234,25 @@ class NoteEditor(QTextEdit):
                         child.setVisible(not parent_hidden)
 
                 # Recursively process nested headers inside this region.
-                # Blank lines are skipped so they keep the visible state set above.
+                # Blank lines and same-or-less-indented blocks are skipped so
+                # they keep the visible state set above and cannot cause loops.
                 k = i + 1
                 while k < end_idx:
-                    if not self.document().findBlockByNumber(k).text().strip():
+                    child = self.document().findBlockByNumber(k)
+                    child_text = child.text()
+                    child_stripped = child_text.lstrip()
+                    if not child_stripped:
                         k += 1
                         continue
-                    k = self._apply_folding(k, indent, parent_hidden or collapsed, is_undo)
+                    child_indent = len(child_text) - len(child_stripped)
+                    if child_indent <= indent:
+                        k += 1
+                        continue
+                    next_k = self._apply_folding(k, indent, parent_hidden or collapsed, is_undo)
+                    if next_k <= k:
+                        k += 1
+                    else:
+                        k = next_k
 
                 i = end_idx
             else:
@@ -1023,8 +1035,8 @@ class ProjectColumn(QFrame):
         for i, s in enumerate(sections):
             self.db.update_project_section(s.section_id, sort_order=i)
 
-    def _load_sections(self):
-        if self._sections_loaded:
+    def _load_sections(self, force=False):
+        if self._sections_loaded and not force:
             return
         self._sections_loaded = True
         # Remove existing section widgets
@@ -1061,7 +1073,7 @@ class ProjectColumn(QFrame):
         if not self._sections_loaded:
             self._load_sections()
         self.db.delete_project_section(section_id)
-        self._load_sections()
+        self._load_sections(force=True)
 
     def _on_header_mouse_press(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
