@@ -201,10 +201,13 @@ class NoteEditor(QTextEdit):
 
                 # Collapsed headers keep a sealed fold region so edits made
                 # while collapsed do not get absorbed into the fold.
+                # The sealed end must never extend past the current indentation
+                # boundary, otherwise text typed after the fold would be hidden.
                 if collapsed:
                     end_pos = self._fold_regions.get(pos, current_end_pos)
                     if end_pos <= pos:
                         end_pos = current_end_pos
+                    end_pos = min(end_pos, current_end_pos)
                     self._fold_regions[pos] = end_pos
                 else:
                     end_pos = current_end_pos
